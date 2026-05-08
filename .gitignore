@@ -1,0 +1,11 @@
+# runtime + build outputs
+data/
+AdaptixClient-dist/
+build/
+*.log
+
+# local agent state
+.claude/
+
+# macOS noise
+.DS_Store

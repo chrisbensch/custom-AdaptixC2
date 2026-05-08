@@ -1,0 +1,142 @@
+# syntax=docker/dockerfile:1.7
+#
+# Unified AdaptixC2 build: server + default extenders + Kharon (agent + HTTP listener)
+# + Extension-Kit BOFs + PostEx-Arsenal BOFs, all wired through profile.kharon.yaml.
+#
+# Build context: workspace root containing AdaptixC2/, Extension-Kit/, Kharon/, PostEx-Arsenal/.
+# All stages pinned to linux/amd64 because runtime artifacts and Windows cross-compile
+# toolchains target x86_64; user host is Apple Silicon arm64 (uses QEMU emulation).
+
+# ============================================
+# Stage: base — toolchains for every component
+# ============================================
+FROM --platform=linux/amd64 golang:1.25-bookworm AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GOEXPERIMENT=jsonv2,greenteagc
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        wget \
+        make \
+        build-essential \
+        gcc \
+        g++ \
+        mingw-w64 \
+        g++-mingw-w64 \
+        libssl-dev \
+        zlib1g-dev \
+        nasm \
+        clang \
+        llvm \
+        python3 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# go-win7: Windows 7 / Server 2008 R2 compatible Go runtime, required by Gopher Agent
+# and consumed by Kharon's beacon build chain.
+RUN git clone --depth=1 https://github.com/Adaptix-Framework/go-win7 /usr/lib/go-win7 && \
+    mkdir -p /usr/lib/go-win7/pkg/include && \
+    cd /usr/lib/go-win7/src/runtime && \
+    for f in *.h; do ln -sf /usr/lib/go-win7/src/runtime/$f /usr/lib/go-win7/pkg/include/$f; done
+
+WORKDIR /src
+
+# ============================================
+# Stage: build-bofs — Extension-Kit + PostEx-Arsenal BOFs
+# ============================================
+FROM base AS build-bofs
+
+# Extension-Kit: 10 BOF subdirectories, each emits .x64.o / .x32.o into its _bin/.
+# SAL-BOF/Makefile fetches a vulnerable-driver list via python3; allowed to fail offline,
+# the rest of the BOFs still build.
+COPY Extension-Kit /src/Extension-Kit
+RUN make -C /src/Extension-Kit
+
+# PostEx-Arsenal: cross-compiles .cc → bofs/dist/*.x64.o.
+# postex_sc/*/bin/*.bin are committed pre-built per plan; carried through unchanged.
+COPY PostEx-Arsenal /src/PostEx-Arsenal
+RUN make -C /src/PostEx-Arsenal/bofs
+
+# ============================================
+# Stage: build-server — AdaptixC2 + Kharon extenders
+# ============================================
+FROM base AS build-server
+
+COPY AdaptixC2 /src/AdaptixC2
+
+# Inline what Kharon/setup_kharon.sh does (without --ax indirection):
+# drop the agent + listener extender directories into AdaptixServer/extenders/,
+# register them in go.work, then let AdaptixC2's Makefile auto-discover them.
+COPY Kharon/agent_kharon         /src/AdaptixC2/AdaptixServer/extenders/agent_kharon
+COPY Kharon/listener_kharon_http /src/AdaptixC2/AdaptixServer/extenders/listener_kharon_http
+
+RUN cd /src/AdaptixC2/AdaptixServer && \
+    go work use ./extenders/agent_kharon ./extenders/listener_kharon_http && \
+    go work sync
+
+# Build adaptixserver + every extender plugin (default 7 + Kharon 2 = 9).
+RUN make -C /src/AdaptixC2 server-ext
+
+# Build the Kharon beacon itself (clang + nasm). Plugin already built via 'make extenders';
+# this target compiles the PIC beacon source under src_beacon/ and stages it into the
+# extender's dist/ for runtime payload generation.
+RUN make -C /src/AdaptixC2/AdaptixServer/extenders/agent_kharon agent
+
+# After 'make agent' runs in-source, the AdaptixC2 top-level Makefile already moved the
+# extender's dist into /src/AdaptixC2/dist/extenders/agent_kharon. Re-sync any artifacts
+# the in-source build produced after that move.
+RUN if [ -d /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist ]; then \
+        cp -r /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist/. \
+              /src/AdaptixC2/dist/extenders/agent_kharon/; \
+    fi
+
+# ============================================
+# Stage: runtime — minimal server image
+# ============================================
+FROM --platform=linux/amd64 debian:bookworm-slim AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        openssl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Server binary + default extenders + Kharon extenders + ssl_gen.sh + 404page.html.
+COPY --from=build-server /src/AdaptixC2/dist/ /app/
+
+# Built BOFs and AxScript bundles. Paths mirror the layout the .axs files expect:
+# kh_modules.axs uses ax.script_dir() + "bofs/dist/<name>.<arch>.o"
+# extension-kit.axs uses ax.script_dir() + "<Subdir>/<name>.axs"
+COPY --from=build-bofs /src/Extension-Kit  /app/Extension-Kit
+COPY --from=build-bofs /src/PostEx-Arsenal /app/PostEx-Arsenal
+
+# Final wiring: profile.yaml (replaces the upstream default) + Kharon listener template.
+COPY profile.kharon.yaml                              /app/profile.yaml
+COPY Kharon/listener_kharon_http/profiles/template.json /app/kharon-template.json
+
+# Entrypoint: generate self-signed certs on first run (matches AdaptixC2/Dockerfile
+# runtime stage behavior), then exec the server.
+RUN printf '%s\n' \
+    '#!/bin/bash' \
+    'set -e' \
+    'echo "[*] Starting Adaptix C2 Server..."' \
+    'if [ ! -f /app/server.rsa.crt ] || [ ! -f /app/server.rsa.key ]; then' \
+    '    echo "[*] Generating self-signed certificates..."' \
+    '    cd /app && openssl req -x509 -nodes -newkey rsa:2048 \' \
+    '        -keyout server.rsa.key -out server.rsa.crt -days 3650 \' \
+    '        -subj "/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost"' \
+    '    echo "[+] Certificates generated"' \
+    'fi' \
+    'echo "[+] Launching Adaptix Server..."' \
+    'exec "$@"' \
+    > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+EXPOSE 4321 80 443 8080 8443
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["/app/adaptixserver", "-profile", "/app/profile.yaml"]

@@ -1,0 +1,50 @@
+name: adaptixc2-unified
+
+# Build context is this directory so the Dockerfile can COPY all four sibling repos.
+# `platform: linux/amd64` is set on every service because the host is arm64 (Apple
+# Silicon) but the produced binaries (and the Windows cross-compile chain inside the
+# build) target x86_64. Docker Desktop's QEMU emulation handles the cross-arch run.
+
+services:
+  builder:
+    profiles: ["build"]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      platforms:
+        - linux/amd64
+    image: adaptixc2-unified:latest
+    container_name: adaptixc2-builder
+    command: ["true"]
+
+  server:
+    profiles: ["runtime"]
+    platform: linux/amd64
+    image: adaptixc2-unified:latest
+    container_name: adaptixc2-server
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=${TZ:-UTC}
+    restart: unless-stopped
+
+  # Linux AppImage build. Reuses AdaptixC2/Dockerfile's build-client stage as-is
+  # (Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool).
+  # Pinned linux/amd64 so it builds under QEMU on arm64 hosts.
+  client-linux:
+    profiles: ["build-client"]
+    platform: linux/amd64
+    build:
+      context: ./AdaptixC2
+      dockerfile: Dockerfile
+      target: build-client
+      platforms:
+        - linux/amd64
+    image: adaptixc2-client-linux-builder:latest
+    container_name: adaptixc2-client-linux-builder
+    volumes:
+      - ./AdaptixClient-dist:/client-dist-output
+    command: sh -c "cp -r /client-dist/. /client-dist-output/"

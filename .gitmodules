@@ -1,0 +1,12 @@
+[submodule "AdaptixC2"]
+	path = AdaptixC2
+	url = https://github.com/Adaptix-Framework/AdaptixC2
+[submodule "Extension-Kit"]
+	path = Extension-Kit
+	url = https://github.com/Adaptix-Framework/Extension-Kit
+[submodule "Kharon"]
+	path = Kharon
+	url = https://github.com/entropy-z/Kharon
+[submodule "PostEx-Arsenal"]
+	path = PostEx-Arsenal
+	url = https://github.com/entropy-z/PostEx-Arsenal

@@ -1,0 +1,28 @@
+diff --git a/AdaptixClient/CMakeLists.txt b/AdaptixClient/CMakeLists.txt
+index 98fc312..c160b6a 100644
+--- a/AdaptixClient/CMakeLists.txt
++++ b/AdaptixClient/CMakeLists.txt
+@@ -259,6 +259,23 @@ add_executable(AdaptixClient
+         Source/Utils/TitleBarStyle.cpp
+ )
+ 
++if(APPLE)
++    set(MACOS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AdaptixClient.icns")
++    set_target_properties(AdaptixClient PROPERTIES
++        MACOSX_BUNDLE TRUE
++        MACOSX_BUNDLE_BUNDLE_NAME "AdaptixClient"
++        MACOSX_BUNDLE_GUI_IDENTIFIER "io.adaptix.client"
++        MACOSX_BUNDLE_BUNDLE_VERSION "1.2.0"
++        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.2"
++        MACOSX_BUNDLE_ICON_FILE "AdaptixClient.icns"
++    )
++    if(EXISTS "${MACOS_ICON}")
++        target_sources(AdaptixClient PRIVATE "${MACOS_ICON}")
++        set_source_files_properties("${MACOS_ICON}" PROPERTIES
++            MACOSX_PACKAGE_LOCATION "Resources")
++    endif()
++endif()
++
+ target_compile_definitions(
+         AdaptixClient
+         PUBLIC KDDW_FRONTEND_QTWIDGETS KDDW_FRONTEND_QT BUILDING_DOCKS_LIBRARY
