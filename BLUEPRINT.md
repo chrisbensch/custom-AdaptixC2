@@ -9,7 +9,7 @@
 The workspace itself is a git repo. The four upstream projects are git **submodules** pinned to the SHAs in §2; we don't own those repos, so customizations live in `patches/` (applied at build time) rather than committed inside them. Reproduce on another machine with `git clone --recurse-submodules <workspace-repo-url>`.
 
 ```
-/Users/chrisbensch/zTemp/claude-adaptixc2/
+custom-AdaptixC2/         ← workspace root (this directory)
 ├── .git/                 ← workspace repo
 ├── .gitmodules           ← submodule URLs + paths (commits pinned via gitlinks in §2)
 ├── .gitignore            ← excludes data/, AdaptixClient-dist/, build/, .claude/, *.log
@@ -97,7 +97,7 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
   - generates `/app/entrypoint.sh` inline (cert-gen on first run, then exec server)
 - `EXPOSE 4321 80 443 8080 8443`. `ENTRYPOINT /app/entrypoint.sh`. `CMD /app/adaptixserver -profile /app/profile.yaml`.
 
-The full file is at `/Users/chrisbensch/zTemp/claude-adaptixc2/Dockerfile` (143 lines). Do not duplicate here — copy verbatim or regenerate from this spec.
+The full file is at `./Dockerfile` (149 lines). Do not duplicate here — copy verbatim or regenerate from this spec.
 
 ### 5.2 `/docker-compose.yml`
 
@@ -172,7 +172,7 @@ These paths resolve relative to `/app/` (server's CWD inside the container), whi
 
 ### 5.4 `/build-client-macos.sh`
 
-Native macOS arm64 build. 163 lines; full file at workspace root. Key steps:
+Native macOS arm64 build. 185 lines; full file at workspace root. Key steps:
 
 1. **Preflight:** require `Darwin arm64`; require `brew`; verify `cmake`, `qt@6`, `openssl@3` Homebrew kegs.
 2. **Icon:** `sips` + `iconutil` convert `AdaptixC2/AdaptixClient/Resources/Logo.png` → `AdaptixClient.icns`. Idempotent (skip if newer than source).
@@ -267,12 +267,12 @@ Worth pushing upstream as a one-line PR; until then, this patch keeps cross-arch
 **First-time setup on a fresh machine:**
 
 ```bash
-git clone --recurse-submodules <workspace-repo-url> claude-adaptixc2
-cd claude-adaptixc2
+git clone --recurse-submodules https://github.com/chrisbensch/custom-AdaptixC2.git
+cd custom-AdaptixC2
 # If you forgot --recurse-submodules: git submodule update --init --recursive
 ```
 
-From `/Users/chrisbensch/zTemp/claude-adaptixc2/`:
+From the workspace root:
 
 ```bash
 # Server image, host-arch (≈6 min native arm64; ≈12 min native amd64; 273–288 MB)
