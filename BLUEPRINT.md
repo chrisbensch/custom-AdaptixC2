@@ -9,7 +9,7 @@
 The workspace itself is a git repo. The four upstream projects are git **submodules** pinned to the SHAs in §2; we don't own those repos, so customizations live in `patches/` (applied at build time) rather than committed inside them. Reproduce on another machine with `git clone --recurse-submodules <workspace-repo-url>`.
 
 ```
-custom-AdaptixC2/         ← workspace root (this directory)
+./
 ├── .git/                 ← workspace repo
 ├── .gitmodules           ← submodule URLs + paths (commits pinned via gitlinks in §2)
 ├── .gitignore            ← excludes data/, AdaptixClient-dist/, build/, .claude/, *.log
@@ -99,7 +99,7 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
 
 The full file is at `./Dockerfile` (149 lines). Do not duplicate here — copy verbatim or regenerate from this spec.
 
-### 5.2 `/docker-compose.yml`
+### 5.2 `docker-compose.yml`
 
 Three services. The `builder` and `server` services have **no platform pin** (host arch by default; override with `DOCKER_DEFAULT_PLATFORM`). Only `client-linux` is pinned to `linux/amd64` because the AppImage it produces is x86_64 by definition.
 
@@ -145,7 +145,7 @@ services:
 
 `client-linux` deliberately reuses **`AdaptixC2/Dockerfile`**'s existing `build-client` stage (lines ≈21–121 in upstream): Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool. No duplication — if upstream changes the stage, we inherit it.
 
-### 5.3 `/profile.kharon.yaml`
+### 5.3 `profile.kharon.yaml`
 
 Copy of `AdaptixC2/AdaptixServer/profile.yaml` with two diffs (relative to upstream default):
 
@@ -170,7 +170,7 @@ All other fields (Teamserver port 4321, endpoint `/endpoint`, default operator c
 
 These paths resolve relative to `/app/` (server's CWD inside the container), which is exactly where `/app/Extension-Kit/` and `/app/PostEx-Arsenal/` are placed by the runtime stage. AxScript's `ax.script_dir()` resolves to the directory of the loaded `.axs` file — so `kh_modules.axs` finds `bofs/dist/*.x64.o` at `/app/PostEx-Arsenal/bofs/dist/*.x64.o`, and `extension-kit.axs` finds the per-subdir scripts.
 
-### 5.4 `/build-client-macos.sh`
+### 5.4 `build-client-macos.sh`
 
 Native macOS arm64 build. 185 lines; full file at workspace root. Key steps:
 
@@ -187,7 +187,7 @@ Native macOS arm64 build. 185 lines; full file at workspace root. Key steps:
 
 Flags: `--clean` (wipe build dir first), `--dmg` (also produce `.dmg`).
 
-### 5.5 `/patches/`
+### 5.5 `patches/`
 
 Build-time patches against submodule trees we don't own. Each is a unified-diff file applied by the relevant build step. The macOS patch is applied/reverted via `trap` around the build (host filesystem); the Dockerfile patches are applied inside the container layer (so the host submodule tree never gets touched).
 
