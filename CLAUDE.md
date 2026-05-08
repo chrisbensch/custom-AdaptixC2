@@ -4,16 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Layout
 
-This working directory is **not a single repo** — it is a workspace containing four sibling git repositories that compose the Adaptix C2 ecosystem. There is no top-level build; each project builds independently.
+This is a workspace git repo. The four upstream projects of the Adaptix C2 ecosystem live underneath as **git submodules** pinned to specific commits (see `BLUEPRINT.md` §2 for the SHA table). The workspace itself adds a build harness that composes them into one runtime image; each upstream project also still builds independently via its own Makefiles. For the user-facing overview see `README.md`; for the full integration recipe see `BLUEPRINT.md`.
 
 | Directory | What it is |
 |---|---|
-| `AdaptixC2/` | The core framework: Go teamserver + Qt6/C++ GUI client + the default Go-plugin extenders (HTTP/SMB/TCP/DNS beacon listeners, beacon agent, Gopher listener/agent). |
-| `Extension-Kit/` | The official BOF (Beacon Object File) collection. C/C++ sources cross-compiled with mingw-w64 to `.x64.o`/`.x32.o` artifacts plus AxScript (`.axs`) command wrappers. |
-| `Kharon/` | A third-party PIC agent + HTTP listener that plugs into Adaptix as additional extenders. Installs into an existing `AdaptixC2/` checkout via `setup_kharon.sh`. |
-| `PostEx-Arsenal/` | Standalone BOF + post-ex shellcode collection (`bofs/`, `postex_sc/`) loaded into Adaptix via `kh_modules.axs` (Kharon-flavored commands). |
+| `AdaptixC2/` | Submodule. The core framework: Go teamserver + Qt6/C++ GUI client + the default Go-plugin extenders (HTTP/SMB/TCP/DNS beacon listeners, beacon agent, Gopher listener/agent). |
+| `Extension-Kit/` | Submodule. The official BOF (Beacon Object File) collection. C/C++ sources cross-compiled with mingw-w64 to `.x64.o`/`.x32.o` artifacts plus AxScript (`.axs`) command wrappers. |
+| `Kharon/` | Submodule. Third-party PIC agent + HTTP listener that plugs into Adaptix as additional extenders. Upstream design grafts onto an existing `AdaptixC2/` checkout via `setup_kharon.sh`; in this workspace the `Dockerfile` inlines those same steps at build time. |
+| `PostEx-Arsenal/` | Submodule. Standalone BOF + post-ex shellcode collection (`bofs/`, `postex_sc/`) loaded into Adaptix via `kh_modules.axs` (Kharon-flavored commands). |
 
 Authorized red-team / pentest tooling. The `AdaptixC2` `LICENSE` and READMEs make the legal boundary explicit — preserve those notices.
+
+## Build harness (this workspace)
+
+These workspace-root files compose the integration. They — not the upstream Makefiles — are the canonical entry points for any "build the whole thing" task:
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | Multi-stage `linux/amd64` build: `base` (Go + mingw-w64 + clang/nasm/llvm) → `build-bofs` (Extension-Kit + PostEx-Arsenal) → `build-server` (server + 9 extenders, including Kharon grafted at build time) → `runtime` (debian-slim + entrypoint that auto-generates TLS certs on first start). |
+| `docker-compose.yml` | Three profiles: `build` (build the runtime image), `runtime` (run the server with `network_mode: host` and `./data` bind-mount), `build-client` (Linux AppImage via `AdaptixC2/Dockerfile`'s own `build-client` stage — no duplication). |
+| `profile.kharon.yaml` | The server profile baked into the runtime image. Diff vs. upstream `AdaptixC2/AdaptixServer/profile.yaml`: adds the two Kharon extenders and the two AxScript module sets (`Extension-Kit/extension-kit.axs`, `PostEx-Arsenal/kh_modules.axs`). |
+| `build-client-macos.sh` | Native Apple Silicon `.app` build (Homebrew Qt + macdeployqt + RPATH cleanup + ad-hoc sign). Applies and reverts `patches/adaptixclient-macos-bundle.patch` around the build via `trap`, so the AdaptixC2 submodule tree stays clean. |
+| `patches/` | Build-time patches against submodule trees. We don't own the upstream repos, so persistent customizations live here as unified diffs and are applied/reverted by the relevant build step. Currently: `adaptixclient-macos-bundle.patch` (the macOS bundle CMake block). |
+| `BLUEPRINT.md` | Exhaustive integration recipe: every Dockerfile stage, every patch, every gotcha, the upstream-refresh flow, and the verification checklist. **Read this before changing the build.** |
+| `README.md` | User-facing project overview and quick start. |
+
+When changing the integrated build, edit harness files; do not commit modifications inside any submodule tree (see "Cross-cutting conventions" below).
 
 ## AdaptixC2 — build & run
 
@@ -158,3 +174,4 @@ make clean
 - **Profile-driven.** Server behavior (which extenders, which scripts, who can log in) lives entirely in `profile.yaml`. Restart the server to apply profile changes; there is no hot-reload.
 - **AxScript bridges (`ax.*`)** are stable across server and client engines. `script_dir()`, `arch(id)`, `bof_pack(fmt, args)`, `execute_alias(id, cmdline, real_cmd, msg)`, `create_command/addArgFlag*/setPreHook` are the building blocks every BOF wrapper uses.
 - **Dev branch.** Both `AdaptixC2` and `Extension-Kit` READMEs ask contributors to push to `dev`, not `main`.
+- **Don't commit inside submodule trees.** The four upstream repos are git submodules pinned to specific SHAs — we don't own those repos. Persistent customizations go in `patches/` (unified diffs applied at build time and reverted on exit) or are made Dockerfile-side at COPY time. To bump a submodule: `cd <submod> && git fetch && git checkout <new-sha> && cd .. && git -C <submod> apply --check patches/...patch && git add <submod> && git commit`. See `BLUEPRINT.md` §6 (patch catalog) and §10 (full upgrade flow).
