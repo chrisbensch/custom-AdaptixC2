@@ -210,10 +210,12 @@ AdaptixC2 splits into three independently-built pieces: a Go **teamserver** (one
 
 All of the actual offensive-security functionality in this build is the work of upstream maintainers. This repository is a build-and-integration harness; full credit for the framework and modules belongs to:
 
-- **AdaptixC2** — [Adaptix-Framework](https://github.com/Adaptix-Framework) and contributors
-- **Kharon** — [@entropy-z](https://github.com/entropy-z) and contributors
-- **PostEx-Arsenal** — [@entropy-z](https://github.com/entropy-z) and contributors
-- **Extension-Kit** — [Adaptix-Framework](https://github.com/Adaptix-Framework) and contributors
+- **AdaptixC2** — [Adaptix-Framework](https://github.com/Adaptix-Framework) and contributors — the teamserver, GUI client, extender plugin API, and default listeners/agents
+- **Extension-Kit** — [Adaptix-Framework](https://github.com/Adaptix-Framework) and contributors — the official BOF collection and AxScript wrappers
+- **Kharon** — [__oblivion](https://github.com/entropy-z) ([@entropy-z](https://github.com/entropy-z)) — the PIC agent with stack spoofing, sleep obfuscation, and indirect syscalls
+- **PostEx-Arsenal** — [__oblivion](https://github.com/entropy-z) ([@entropy-z](https://github.com/entropy-z)) — the Kharon-flavored BOF and post-ex shellcode module collection
+
+The original installation walkthrough that guided the Kharon integration was written by **Mitchell** and published at [Mitchell's Journal — AdaptixC2 + Kharon Installation Guide](https://mitchells-journal.gitbook.io/writings/adaptixc2-and-nakasendo/0.1.-adaptixc2-and-kharon-installation-guide). That article is what this build harness automates.
 
 If you find a bug in the framework, an agent, or a BOF, please file it upstream — not here. File issues here only when something in the *build harness* (Dockerfile, profile, macOS script, patches) is broken.
 
