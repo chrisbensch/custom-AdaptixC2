@@ -13,6 +13,7 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 ├── .git/                 ← workspace repo
 ├── .gitmodules           ← submodule URLs + paths (commits pinned via gitlinks in §2)
 ├── .gitignore            ← excludes data/, AdaptixClient-dist/, build/, .claude/, *.log
+├── .dockerignore         ← excludes **/.git, **/.gitmodules from build context (see §5.6)
 │
 ├── AdaptixC2/            ← submodule: Adaptix-Framework/AdaptixC2  (server + Qt6 client)
 ├── Extension-Kit/        ← submodule: Adaptix-Framework/Extension-Kit  (BOFs)
@@ -21,19 +22,21 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 │
 ├── BLUEPRINT.md          ← this file
 ├── CLAUDE.md             ← context for future Claude conversations (separate concern)
-├── Dockerfile            ← unified server build (multi-stage, linux/amd64)
+├── README.md             ← user-facing project overview
+├── Dockerfile            ← unified server build (multi-stage, host-arch by default)
 ├── docker-compose.yml    ← services for build/runtime/build-client
 ├── profile.kharon.yaml   ← merged server profile, 9 extenders + 2 axscripts
 ├── build-client-macos.sh ← native macOS .app build script (Apple Silicon arm64)
 │
-├── patches/                              ← build-time patches against submodules
-│   └── adaptixclient-macos-bundle.patch  ← see §5.5 / §6.1
+├── patches/                                       ← build-time patches against submodules
+│   ├── adaptixclient-macos-bundle.patch           ← see §5.5 / §6.1
+│   └── extension-kit-nanodump-host-strip.patch   ← see §5.5 / §6.3
 │
 ├── data/                 ← created at runtime; SQLite DB persistence (bind mount, gitignored)
 └── AdaptixClient-dist/   ← created during builds; AppImage and .app land here (gitignored)
 ```
 
-Host: macOS Apple Silicon (arm64). Server image targets **linux/amd64** (QEMU emulation). Linux client AppImage targets **x86_64**. macOS client targets **arm64 only**.
+Host: macOS Apple Silicon (arm64). The server image builds for the **host architecture by default** — native arm64 builds on Apple Silicon (≈6 min), or set `DOCKER_DEFAULT_PLATFORM=linux/amd64` to force amd64 under QEMU emulation (≈13 min). Verified to build and run on both arches. The Linux client AppImage stays pinned to **linux/amd64** because it produces an x86_64 AppImage by definition. macOS client targets **arm64 only**.
 
 ## 2. Upstream baselines this was applied against
 
@@ -73,10 +76,10 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 
 ### 5.1 `/Dockerfile` (server image)
 
-Multi-stage; build context = workspace root; every stage `--platform=linux/amd64`.
+Multi-stage; build context = workspace root; **builds for the host architecture** (no `--platform` pin on `FROM` lines). Pass `--platform=linux/amd64` to docker build (or set `DOCKER_DEFAULT_PLATFORM`) to force a specific arch — verified working on both arm64 and amd64.
 
 - `base` — Debian-based golang image with `mingw-w64 g++-mingw-w64 gcc g++ make build-essential libssl-dev zlib1g-dev nasm clang llvm python3 git wget ca-certificates`. Clones `Adaptix-Framework/go-win7` into `/usr/lib/go-win7` and symlinks runtime headers. Sets `GOEXPERIMENT=jsonv2,greenteagc`.
-- `build-bofs` — `COPY Extension-Kit /src/Extension-Kit && make -C /src/Extension-Kit` then `COPY PostEx-Arsenal /src/PostEx-Arsenal && make -C /src/PostEx-Arsenal/bofs`. SAL-BOF's `python3 download_vulnerable_driver_list.py` is allowed to fail offline; rest of BOFs still build.
+- `build-bofs` — `COPY Extension-Kit /src/Extension-Kit && COPY patches /src/patches && git apply /src/patches/extension-kit-nanodump-host-strip.patch && make -C /src/Extension-Kit` then `COPY PostEx-Arsenal /src/PostEx-Arsenal && make -C /src/PostEx-Arsenal/bofs`. The patch fixes an upstream nanodump Makefile bug that breaks on non-amd64 hosts (see §6.3). SAL-BOF's `python3 download_vulnerable_driver_list.py` is allowed to fail offline; rest of BOFs still build.
 - `build-server`:
   1. `COPY AdaptixC2 /src/AdaptixC2`
   2. `COPY Kharon/agent_kharon /src/AdaptixC2/AdaptixServer/extenders/agent_kharon`
@@ -98,7 +101,7 @@ The full file is at `/Users/chrisbensch/zTemp/claude-adaptixc2/Dockerfile` (143 
 
 ### 5.2 `/docker-compose.yml`
 
-Three services, each `platform: linux/amd64`:
+Three services. The `builder` and `server` services have **no platform pin** (host arch by default; override with `DOCKER_DEFAULT_PLATFORM`). Only `client-linux` is pinned to `linux/amd64` because the AppImage it produces is x86_64 by definition.
 
 ```yaml
 name: adaptixc2-unified
@@ -106,19 +109,16 @@ name: adaptixc2-unified
 services:
   builder:                                     # profile: build  — wraps `docker build`
     profiles: ["build"]
-    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
-      platforms: [linux/amd64]
     image: adaptixc2-unified:latest
     container_name: adaptixc2-builder
     command: ["true"]
 
   server:                                      # profile: runtime — runs the server
     profiles: ["runtime"]
-    platform: linux/amd64
     image: adaptixc2-unified:latest
     container_name: adaptixc2-server
     network_mode: host
@@ -189,13 +189,18 @@ Flags: `--clean` (wipe build dir first), `--dmg` (also produce `.dmg`).
 
 ### 5.5 `/patches/`
 
-Build-time patches against submodule trees we don't own. Each is a unified-diff file that the relevant build script `git apply`s on entry and reverts on exit (via `trap`), so the submodule working tree stays clean between builds — preserving the §6.2 rule.
+Build-time patches against submodule trees we don't own. Each is a unified-diff file applied by the relevant build step. The macOS patch is applied/reverted via `trap` around the build (host filesystem); the Dockerfile patches are applied inside the container layer (so the host submodule tree never gets touched).
 
 | Patch | Target | Applied by |
 |---|---|---|
-| `adaptixclient-macos-bundle.patch` | `AdaptixC2/AdaptixClient/CMakeLists.txt` | `build-client-macos.sh` |
+| `adaptixclient-macos-bundle.patch` | `AdaptixC2/AdaptixClient/CMakeLists.txt` | `build-client-macos.sh` (host, with auto-revert) |
+| `extension-kit-nanodump-host-strip.patch` | `Extension-Kit/Creds-BOF/nanodump/Makefile` | `Dockerfile` `build-bofs` stage (container only) |
 
-When upstream drifts and a patch stops applying, the apply script fails fast with a clear message. Regenerate the patch from a freshly-rebased manual edit, then commit the new `.patch` file. Don't accumulate patches: if a workaround can be replaced by an upstream change, push for that instead.
+When upstream drifts and a patch stops applying, the apply script (or `docker compose build`) fails fast with a clear message. Regenerate the patch from a freshly-rebased manual edit, then commit the new `.patch` file. Don't accumulate patches: if a workaround can be replaced by an upstream change, push for that instead.
+
+### 5.6 `/.dockerignore`
+
+Excludes `**/.git`, `**/.gitmodules`, build outputs, and `.claude/` from every `docker build` context that uses the workspace root. The `**/.git` exclusion is **load-bearing**: each submodule on the host has a `.git` *file* that points (`gitdir: ../.git/modules/<name>`) into the parent repo's `.git/modules/`. Without `.dockerignore`, Docker COPYs that pointer file into the container, where the path it references doesn't exist — and `git apply` inside the container then fails with `fatal: not a git repository`. Excluding the file lets `git apply` operate on a plain directory (which it does fine; it doesn't actually need a repo).
 
 ## 6. Patches to upstream subrepos
 
@@ -233,16 +238,29 @@ Purely additive; Linux/Windows builds unaffected. The existing `if(WIN32) … el
 
 If upstream future `add_executable(...)` arguments change (e.g. they already add `MACOSX_BUNDLE`), drop this patch in favor of upstream's version. Bump `MACOSX_BUNDLE_BUNDLE_VERSION` and `_SHORT_VERSION_STRING` to match the upstream release tag.
 
-### 6.2 No other persistent patches
+### 6.2 Other build-time changes (no source-tree commit needed)
 
-These changes are made **at build time inside the Dockerfile** and do not touch the source tree:
+These changes are made **inside the Dockerfile** and do not touch the host source tree:
 
 - `AdaptixC2/AdaptixServer/extenders/agent_kharon` — populated by `COPY Kharon/agent_kharon …` in the Dockerfile.
 - `AdaptixC2/AdaptixServer/extenders/listener_kharon_http` — populated by `COPY Kharon/listener_kharon_http …`.
 - `AdaptixC2/AdaptixServer/go.work` — `go work use` appends two entries during the build. (`setup_kharon.sh` is the upstream-provided script doing this; we inline the same logic.)
 - `AdaptixC2/AdaptixServer/profile.yaml` — replaced inside the runtime image by the workspace-root `profile.kharon.yaml`.
 
-These should NOT be committed to a submodule working tree — keep them clean so `git status` in any submodule stays empty between builds. The `patches/` mechanism (§5.5) and the `trap`-based revert in `build-client-macos.sh` enforce this for the one persistent diff we have; everything else is Dockerfile-side.
+These should NOT be committed to a submodule working tree — keep them clean so `git status` in any submodule stays empty between builds. The `patches/` mechanism (§5.5), the `trap`-based revert in `build-client-macos.sh`, and the in-container `git apply` for §6.3 enforce this; everything else is Dockerfile-side.
+
+### 6.3 `Extension-Kit/Creds-BOF/nanodump/Makefile` — host-arch strip fix
+
+**Stored as `patches/extension-kit-nanodump-host-strip.patch`; applied inside the container by the Dockerfile's `build-bofs` stage. The host submodule tree is never modified.** The patch deletes one redundant line from upstream nanodump's Makefile:
+
+```diff
+ 	@$(GCC) source/restore_signature.c -o scripts/restore_signature -static -s -Os
+-	@$(STRIP_x64) --strip-all scripts/restore_signature
+```
+
+`scripts/restore_signature` is built by the **host** `gcc` (line 78), but upstream then strips it with `x86_64-w64-mingw32-strip` — a Windows cross-strip targeted at PE/COFF. On amd64 hosts the cross-strip happens to accept x86_64 ELF as a side effect of binutils' BFD library, so the bug is invisible. On arm64 hosts gcc produces aarch64 ELF, which the x86_64-targeted strip rejects with `Unable to recognise the format of the input file`, and the BOF build fails. The strip is also redundant: line 78's `-s` flag already strips at link time. Dropping line 79 fixes arm64 and is a no-op on amd64.
+
+Worth pushing upstream as a one-line PR; until then, this patch keeps cross-arch builds working.
 
 ## 7. Build commands
 
@@ -257,8 +275,11 @@ cd claude-adaptixc2
 From `/Users/chrisbensch/zTemp/claude-adaptixc2/`:
 
 ```bash
-# Server image  (≈13 min on Apple Silicon under QEMU; 282 MB)
+# Server image, host-arch (≈6 min native arm64; ≈12 min native amd64; 273–288 MB)
 docker compose --profile build build
+
+# Same, but force amd64 under QEMU on an arm64 host (≈13 min)
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --profile build build
 
 # Run the server  (host networking; SQLite under ./data/)
 docker compose --profile runtime up -d
@@ -278,7 +299,7 @@ docker compose --profile build-client up --abort-on-container-exit
 ## 8. Verification checklist
 
 **Server image:**
-1. `docker image inspect adaptixc2-unified:latest --format '{{.Os}}/{{.Architecture}}'` → `linux/amd64`
+1. `docker image inspect adaptixc2-unified:latest --format '{{.Os}}/{{.Architecture}}'` → `linux/arm64` or `linux/amd64` matching the build platform
 2. `docker run --rm --entrypoint sh adaptixc2-unified:latest -c 'ls /app/extenders'` → 9 dirs incl. `agent_kharon`, `listener_kharon_http`
 3. `docker run --rm --entrypoint sh adaptixc2-unified:latest -c 'ls /app/Extension-Kit/SAL-BOF/_bin /app/PostEx-Arsenal/bofs/dist | head'` → both populated
 4. `docker compose --profile runtime up -d && docker compose --profile runtime logs --tail=50` → see `Generating self-signed certificates`, `Starting server -> https://0.0.0.0:4321/endpoint`, `The AdaptixC2 server is ready`
@@ -309,7 +330,9 @@ docker compose --profile build-client up --abort-on-container-exit
    - Add an entry in `profile.kharon.yaml`.
    No Makefile edits needed — `EXTENDER_DIRS := $(shell find AdaptixServer/extenders -maxdepth 1 -type d -exec test -f {}/Makefile \; -print)` finds it automatically.
 8. **Build context.** The unified `Dockerfile` requires the workspace root as build context (it COPYs all four sibling repos). The `client-linux` service uses `./AdaptixC2` as its context because it consumes only `AdaptixC2/Dockerfile`'s `build-client` stage.
-9. **arm64 host** building amd64: relies on Docker Desktop's QEMU emulation (binfmt_misc). On a Linux arm64 host, ensure `qemu-user-static` is registered (`docker run --rm --privileged tonistiigi/binfmt --install all`).
+9. **Host-native by default; arm64 first-class.** The unified Dockerfile no longer pins `--platform=linux/amd64`. On Apple Silicon you get a native arm64 image (≈6 min); on amd64 hosts you get amd64. The Windows artifacts in the image (beacon agent C++, Kharon beacon, Gopher agent) are still cross-compiled to PE x86/x64 regardless of host arch via mingw-w64 / clang. To force amd64 from an arm64 host, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` (uses QEMU; ≈13 min) — required if you need to deploy the resulting image to an x86_64 server. On a Linux arm64 host, ensure `qemu-user-static` is registered (`docker run --rm --privileged tonistiigi/binfmt --install all`) before forcing amd64.
+10. **Submodule .git pointer files break in-container `git apply`.** Each submodule on the host has a `.git` *file* containing `gitdir: ../.git/modules/<name>`. Without the workspace-root `.dockerignore`, Docker COPYs that file into the build container, where the path it references doesn't exist — and `git apply` then fails before reading the patch. The `.dockerignore`'s `**/.git` and `**/.gitmodules` lines are load-bearing.
+11. **nanodump host-strip bug surfaces only on non-amd64 hosts.** Upstream's nanodump Makefile strips a host-built ELF binary using `x86_64-w64-mingw32-strip` (a Windows cross-strip). On amd64 the cross-strip silently accepts x86_64 ELF; on arm64 it rejects aarch64 ELF and the build dies. Patched out by `patches/extension-kit-nanodump-host-strip.patch`; the strip was redundant anyway (gcc `-s` already strips). See §6.3.
 
 ## 10. Upgrade path
 
@@ -323,9 +346,9 @@ When refreshing against newer upstreams:
    ```
    If `git apply --check` fails, jump to step 2 to refresh the patch before committing the bump. Repeat for `Extension-Kit`, `Kharon`, `PostEx-Arsenal`. Update §2 baselines in the same commit (or a follow-up).
 1. **`git pull` each subrepo** to a known good tag/commit. Update §2 baselines. *(Subsumed by step 0 above for the submodule case; left here for the non-submodule fallback.)*
-2. **Diff-check the patch site** at `AdaptixC2/AdaptixClient/CMakeLists.txt`:
-   - Find `add_executable(AdaptixClient …)`. If upstream now adds `MACOSX_BUNDLE` or sets bundle props themselves, retire `patches/adaptixclient-macos-bundle.patch` and harmonize.
-   - Otherwise re-apply the patch manually, fix any rejected hunks, and regenerate it: `git -C AdaptixC2 diff -- AdaptixClient/CMakeLists.txt > patches/adaptixclient-macos-bundle.patch`. Bump `MACOSX_BUNDLE_BUNDLE_VERSION` inside the patch to match the new release tag.
+2. **Diff-check the patch sites:**
+   - `AdaptixC2/AdaptixClient/CMakeLists.txt` (patch: `adaptixclient-macos-bundle.patch`). Find `add_executable(AdaptixClient …)`. If upstream now adds `MACOSX_BUNDLE` or sets bundle props themselves, retire the patch and harmonize. Otherwise re-apply manually, fix any rejected hunks, and regenerate: `git -C AdaptixC2 diff -- AdaptixClient/CMakeLists.txt > patches/adaptixclient-macos-bundle.patch`. Bump `MACOSX_BUNDLE_BUNDLE_VERSION` inside the patch to match the new release tag.
+   - `Extension-Kit/Creds-BOF/nanodump/Makefile` (patch: `extension-kit-nanodump-host-strip.patch`). If upstream has fixed the redundant `STRIP_x64 scripts/restore_signature` line themselves (or refactored that target), retire the patch. Otherwise re-apply manually and regenerate: `git -C Extension-Kit diff -- Creds-BOF/nanodump/Makefile > patches/extension-kit-nanodump-host-strip.patch`. Worth checking whether the upstream PR has been merged before re-applying.
 3. **Diff-check `AdaptixC2/AdaptixServer/profile.yaml`** vs `profile.kharon.yaml`. If upstream added new HttpServer fields or a new default extender, mirror those into `profile.kharon.yaml` while keeping the 2 Kharon extender lines and 2 axscripts entries.
 4. **Diff-check the AdaptixC2 client `build-client` Dockerfile stage**. If `QT_VERSION` or apt deps changed, the workspace `client-linux` service inherits the change for free (no edit).
 5. **Diff-check `AdaptixC2/Makefile`** for the `EXTENDER_DIRS` glob and the `server-ext` target. Both are stable; if either is renamed, update `Dockerfile` step `make -C /src/AdaptixC2 server-ext`.

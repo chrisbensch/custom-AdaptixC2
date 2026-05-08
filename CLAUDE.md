@@ -21,11 +21,12 @@ These workspace-root files compose the integration. They — not the upstream Ma
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Multi-stage `linux/amd64` build: `base` (Go + mingw-w64 + clang/nasm/llvm) → `build-bofs` (Extension-Kit + PostEx-Arsenal) → `build-server` (server + 9 extenders, including Kharon grafted at build time) → `runtime` (debian-slim + entrypoint that auto-generates TLS certs on first start). |
-| `docker-compose.yml` | Three profiles: `build` (build the runtime image), `runtime` (run the server with `network_mode: host` and `./data` bind-mount), `build-client` (Linux AppImage via `AdaptixC2/Dockerfile`'s own `build-client` stage — no duplication). |
+| `Dockerfile` | Multi-stage build, **host-arch by default** (verified arm64 + amd64): `base` (Go + mingw-w64 + clang/nasm/llvm) → `build-bofs` (Extension-Kit with the nanodump patch applied + PostEx-Arsenal) → `build-server` (server + 9 extenders, including Kharon grafted at build time) → `runtime` (debian-slim + entrypoint that auto-generates TLS certs on first start). Force a specific arch with `DOCKER_DEFAULT_PLATFORM=linux/amd64`. |
+| `docker-compose.yml` | Three profiles: `build` (host-arch), `runtime` (host-networking server with `./data` bind-mount), `build-client` (Linux AppImage — pinned `linux/amd64` because the AppImage target is x86_64 by definition). |
 | `profile.kharon.yaml` | The server profile baked into the runtime image. Diff vs. upstream `AdaptixC2/AdaptixServer/profile.yaml`: adds the two Kharon extenders and the two AxScript module sets (`Extension-Kit/extension-kit.axs`, `PostEx-Arsenal/kh_modules.axs`). |
 | `build-client-macos.sh` | Native Apple Silicon `.app` build (Homebrew Qt + macdeployqt + RPATH cleanup + ad-hoc sign). Applies and reverts `patches/adaptixclient-macos-bundle.patch` around the build via `trap`, so the AdaptixC2 submodule tree stays clean. |
-| `patches/` | Build-time patches against submodule trees. We don't own the upstream repos, so persistent customizations live here as unified diffs and are applied/reverted by the relevant build step. Currently: `adaptixclient-macos-bundle.patch` (the macOS bundle CMake block). |
+| `patches/` | Build-time patches against submodule trees. We don't own the upstream repos, so persistent customizations live here as unified diffs and are applied/reverted by the relevant build step. Currently: `adaptixclient-macos-bundle.patch` (macOS bundle CMake block, applied on host with auto-revert) and `extension-kit-nanodump-host-strip.patch` (nanodump host-arch strip fix, applied inside the build container). |
+| `.dockerignore` | Excludes `**/.git` and `**/.gitmodules` from the build context. Load-bearing — without it, submodule `.git` pointer files leak into the build and break in-container `git apply` with `not a git repository`. |
 | `BLUEPRINT.md` | Exhaustive integration recipe: every Dockerfile stage, every patch, every gotcha, the upstream-refresh flow, and the verification checklist. **Read this before changing the build.** |
 | `README.md` | User-facing project overview and quick start. |
 
