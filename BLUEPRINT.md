@@ -104,7 +104,7 @@ The full file is at `./Dockerfile` (149 lines). Do not duplicate here — copy v
 Three services. The `builder` and `server` services have **no platform pin** (host arch by default; override with `DOCKER_DEFAULT_PLATFORM`). Only `client-linux` is pinned to `linux/amd64` because the AppImage it produces is x86_64 by definition.
 
 ```yaml
-name: adaptixc2-unified
+name: adaptixc2-omni
 
 services:
   builder:                                     # profile: build  — wraps `docker build`
@@ -113,14 +113,14 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: adaptixc2-unified:latest
-    container_name: adaptixc2-builder
+    image: adaptixc2-omni:latest
+    container_name: adaptixc2-omni-builder
     command: ["true"]
 
   server:                                      # profile: runtime — runs the server
     profiles: ["runtime"]
-    image: adaptixc2-unified:latest
-    container_name: adaptixc2-server
+    image: adaptixc2-omni:latest
+    container_name: adaptixc2-omni-server
     network_mode: host
     volumes:
       - ./data:/app/data
@@ -136,8 +136,8 @@ services:
       dockerfile: Dockerfile
       target: build-client
       platforms: [linux/amd64]
-    image: adaptixc2-client-linux-builder:latest
-    container_name: adaptixc2-client-linux-builder
+    image: adaptixc2-omni-client-linux-builder:latest
+    container_name: adaptixc2-omni-client-linux-builder
     volumes:
       - ./AdaptixClient-dist:/client-dist-output
     command: sh -c "cp -r /client-dist/. /client-dist-output/"
@@ -267,8 +267,8 @@ Worth pushing upstream as a one-line PR; until then, this patch keeps cross-arch
 **First-time setup on a fresh machine:**
 
 ```bash
-git clone --recurse-submodules https://github.com/chrisbensch/custom-AdaptixC2.git
-cd custom-AdaptixC2
+git clone --recurse-submodules https://github.com/chrisbensch/AdaptixC2-Omni.git
+cd AdaptixC2-Omni
 # If you forgot --recurse-submodules: git submodule update --init --recursive
 ```
 
@@ -299,9 +299,9 @@ docker compose --profile build-client up --abort-on-container-exit
 ## 8. Verification checklist
 
 **Server image:**
-1. `docker image inspect adaptixc2-unified:latest --format '{{.Os}}/{{.Architecture}}'` → `linux/arm64` or `linux/amd64` matching the build platform
-2. `docker run --rm --entrypoint sh adaptixc2-unified:latest -c 'ls /app/extenders'` → 9 dirs incl. `agent_kharon`, `listener_kharon_http`
-3. `docker run --rm --entrypoint sh adaptixc2-unified:latest -c 'ls /app/Extension-Kit/SAL-BOF/_bin /app/PostEx-Arsenal/bofs/dist | head'` → both populated
+1. `docker image inspect adaptixc2-omni:latest --format '{{.Os}}/{{.Architecture}}'` → `linux/arm64` or `linux/amd64` matching the build platform
+2. `docker run --rm --entrypoint sh adaptixc2-omni:latest -c 'ls /app/extenders'` → 9 dirs incl. `agent_kharon`, `listener_kharon_http`
+3. `docker run --rm --entrypoint sh adaptixc2-omni:latest -c 'ls /app/Extension-Kit/SAL-BOF/_bin /app/PostEx-Arsenal/bofs/dist | head'` → both populated
 4. `docker compose --profile runtime up -d && docker compose --profile runtime logs --tail=50` → see `Generating self-signed certificates`, `Starting server -> https://0.0.0.0:4321/endpoint`, `The AdaptixC2 server is ready`
 5. Connect a client to `https://<host>:4321/endpoint` with `operator1:pass1`. Listener creation dialog shows 9 extenders. AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` already loaded.
 

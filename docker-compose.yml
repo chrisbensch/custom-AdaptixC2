@@ -1,4 +1,4 @@
-name: adaptixc2-unified
+name: adaptixc2-omni
 
 # Build context is this directory so the Dockerfile can COPY all four sibling repos.
 # Server image and runtime build for the host architecture (no platform pin), so
@@ -13,14 +13,14 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: adaptixc2-unified:latest
-    container_name: adaptixc2-builder
+    image: adaptixc2-omni:latest
+    container_name: adaptixc2-omni-builder
     command: ["true"]
 
   server:
     profiles: ["runtime"]
-    image: adaptixc2-unified:latest
-    container_name: adaptixc2-server
+    image: adaptixc2-omni:latest
+    container_name: adaptixc2-omni-server
     network_mode: host
     volumes:
       - ./data:/app/data
@@ -41,8 +41,8 @@ services:
       target: build-client
       platforms:
         - linux/amd64
-    image: adaptixc2-client-linux-builder:latest
-    container_name: adaptixc2-client-linux-builder
+    image: adaptixc2-omni-client-linux-builder:latest
+    container_name: adaptixc2-omni-client-linux-builder
     volumes:
       - ./AdaptixClient-dist:/client-dist-output
     command: sh -c "cp -r /client-dist/. /client-dist-output/"

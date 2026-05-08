@@ -1,4 +1,4 @@
-# custom-AdaptixC2
+# AdaptixC2-Omni
 
 A reproducible, pinned, single-command build of the [AdaptixC2](https://github.com/Adaptix-Framework/AdaptixC2) framework integrated with [Kharon](https://github.com/entropy-z/Kharon), the [Extension-Kit BOF collection](https://github.com/Adaptix-Framework/Extension-Kit), and the [PostEx-Arsenal modules](https://github.com/entropy-z/PostEx-Arsenal) — packaged as one Dockerized server image plus Linux and macOS GUI clients.
 
@@ -37,8 +37,8 @@ Plus separate workflows for the GUI clients:
 ### 1. Clone with submodules
 
 ```bash
-git clone --recurse-submodules https://github.com/chrisbensch/custom-AdaptixC2.git
-cd custom-AdaptixC2
+git clone --recurse-submodules https://github.com/chrisbensch/AdaptixC2-Omni.git
+cd AdaptixC2-Omni
 ```
 
 If you forgot `--recurse-submodules`:
@@ -105,7 +105,7 @@ Point the client at `https://<server-host>:4321/endpoint` and log in. The listen
 ## Repository layout
 
 ```
-custom-AdaptixC2/
+AdaptixC2-Omni/
 ├── AdaptixC2/            ← submodule: Adaptix-Framework/AdaptixC2  (server + Qt6 client)
 ├── Extension-Kit/        ← submodule: Adaptix-Framework/Extension-Kit  (BOFs)
 ├── Kharon/               ← submodule: entropy-z/Kharon  (PIC agent + HTTP listener)
