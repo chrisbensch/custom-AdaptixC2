@@ -1,0 +1,22 @@
+Drop redundant mingw-w64 strip on host-arch restore_signature binary.
+
+The nanodump Makefile builds scripts/restore_signature with the host gcc
+(line 78) and then strips it with x86_64-w64-mingw32-strip (line 79).
+The Windows cross-strip happens to accept x86_64 ELF as a side effect of
+binutils' BFD library, so the bug is invisible on amd64 hosts. On arm64
+hosts gcc produces aarch64 ELF, which mingw-w64-strip can't recognize,
+breaking the build.
+
+The strip is also redundant: line 78's `-s` flag already strips at link.
+
+diff --git a/Creds-BOF/nanodump/Makefile b/Creds-BOF/nanodump/Makefile
+--- a/Creds-BOF/nanodump/Makefile
++++ b/Creds-BOF/nanodump/Makefile
+@@ -76,7 +76,6 @@ nanodump:
+ 	@$(STRIP_x64) --strip-unneeded dist/$(BOFNAME)_ppl_medic.x64.o && echo '[+] nanodump_ppl_medic x64' || echo '[!] nanodump_ppl_medic x64'
+
+ 	@$(GCC) source/restore_signature.c -o scripts/restore_signature -static -s -Os
+-	@$(STRIP_x64) --strip-all scripts/restore_signature
+
+ clean:
+ 	@rm -f dist/*

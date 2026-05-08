@@ -4,13 +4,14 @@
 # + Extension-Kit BOFs + PostEx-Arsenal BOFs, all wired through profile.kharon.yaml.
 #
 # Build context: workspace root containing AdaptixC2/, Extension-Kit/, Kharon/, PostEx-Arsenal/.
-# All stages pinned to linux/amd64 because runtime artifacts and Windows cross-compile
-# toolchains target x86_64; user host is Apple Silicon arm64 (uses QEMU emulation).
+# Builds for the host architecture. Windows artifacts (beacon agent, Kharon beacon,
+# Gopher agent) are still cross-compiled to x86/x64 PE via mingw-w64 / clang regardless
+# of host arch. To force a specific arch, pass --platform=linux/amd64 to docker build,
+# or set DOCKER_DEFAULT_PLATFORM in the environment.
 
 # ============================================
 # Stage: base — toolchains for every component
 # ============================================
-#FROM --platform=linux/amd64 golang:1.25-bookworm AS base
 FROM golang:1.25-bookworm AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -52,7 +53,12 @@ FROM base AS build-bofs
 # Extension-Kit: 10 BOF subdirectories, each emits .x64.o / .x32.o into its _bin/.
 # SAL-BOF/Makefile fetches a vulnerable-driver list via python3; allowed to fail offline,
 # the rest of the BOFs still build.
+# patches/extension-kit-*.patch fixes upstream Makefile bugs that surface on arm64
+# hosts (see patches/ for details). Applied via `git apply` (works without .git).
 COPY Extension-Kit /src/Extension-Kit
+COPY patches /src/patches
+RUN cd /src/Extension-Kit && \
+    git apply --verbose /src/patches/extension-kit-nanodump-host-strip.patch
 RUN make -C /src/Extension-Kit
 
 # PostEx-Arsenal: cross-compiles .cc → bofs/dist/*.x64.o.
@@ -96,7 +102,7 @@ RUN if [ -d /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist ]; then \
 # ============================================
 # Stage: runtime — minimal server image
 # ============================================
-FROM --platform=linux/amd64 debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -1,0 +1,12 @@
+# Submodule .git pointer files break `git apply` inside the build container
+# (they reference the host's .git/modules path, which isn't in the context).
+**/.git
+**/.gitmodules
+
+# Mirror .gitignore so build context stays small + reproducible
+data/
+AdaptixClient-dist/
+build/
+*.log
+.claude/
+.DS_Store

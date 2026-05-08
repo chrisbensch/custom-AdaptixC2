@@ -49,11 +49,18 @@ git submodule update --init --recursive
 
 ### 2. Build & run the server
 
-Requires Docker Desktop (or any Docker engine; macOS / Apple Silicon hosts use QEMU emulation to build for `linux/amd64`).
+Requires Docker Desktop, OrbStack, or any Docker engine. The image builds for the host architecture by default — verified working on both `linux/arm64` and `linux/amd64`.
 
 ```bash
-# Build the server image (≈13 min on Apple Silicon under QEMU; ~282 MB)
+# Build the server image, host-arch
+#   ≈6 min native on Apple Silicon (arm64)
+#   ≈12 min native on amd64
+#   273–288 MB depending on arch
 docker compose --profile build build
+
+# Force amd64 from an arm64 host (uses QEMU; ≈13 min) — useful when targeting
+# an x86_64 server for deployment.
+DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --profile build build
 
 # Run it (host networking; SQLite state persisted to ./data/)
 docker compose --profile runtime up -d
@@ -104,12 +111,14 @@ custom-AdaptixC2/
 ├── Kharon/               ← submodule: entropy-z/Kharon  (PIC agent + HTTP listener)
 ├── PostEx-Arsenal/       ← submodule: entropy-z/PostEx-Arsenal  (Kharon-flavored modules)
 │
-├── Dockerfile            ← unified server build (multi-stage, linux/amd64)
+├── Dockerfile            ← unified server build (multi-stage, host-arch by default)
 ├── docker-compose.yml    ← profiles: build / runtime / build-client
 ├── profile.kharon.yaml   ← merged server profile, 9 extenders + 2 axscripts
 ├── build-client-macos.sh ← native macOS .app build (Apple Silicon arm64)
 ├── patches/              ← build-time patches against submodules
-│   └── adaptixclient-macos-bundle.patch
+│   ├── adaptixclient-macos-bundle.patch
+│   └── extension-kit-nanodump-host-strip.patch
+├── .dockerignore         ← excludes submodule .git pointer files from build context
 │
 ├── BLUEPRINT.md          ← detailed integration recipe (read this when refreshing or debugging)
 ├── CLAUDE.md             ← context file for AI coding assistants
@@ -133,8 +142,10 @@ Every customization is either a workspace-root file we authored or a tracked pat
 | Compose orchestration | `docker-compose.yml` | Three profiles (`build`, `runtime`, `build-client`) covering the full lifecycle. |
 | Kharon + AxScripts wired into server profile | `profile.kharon.yaml` | Adds the two Kharon extenders and the two AxScript module sets to the upstream default profile. |
 | macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `build-client-macos.sh` applies and reverts it around each build. |
+| nanodump host-strip fix | `patches/extension-kit-nanodump-host-strip.patch` | Upstream nanodump strips its host-built `restore_signature` ELF with the Windows cross-strip, which breaks on arm64 hosts. The patch deletes the redundant strip line; `gcc -s` on the prior line already strips it. Applied inside the build container by the Dockerfile. |
 | macOS native build script | `build-client-macos.sh` | macdeployqt + RPATH cleanup + ad-hoc signing — required to produce a portable Apple Silicon `.app` that launches outside the build host. |
 | Kharon graft inside the build | (Dockerfile-only, no source-tree change) | The Dockerfile copies `Kharon/agent_kharon` and `Kharon/listener_kharon_http` into `AdaptixServer/extenders/` and runs `go work use` *inside* the container, mirroring what `Kharon/setup_kharon.sh` does — but only inside the build, never on the host tree. |
+| Build-context hygiene | `.dockerignore` | Excludes `**/.git` so submodule `.git` pointer files (which reference paths outside the build context) don't break in-container `git apply`. |
 
 See [BLUEPRINT.md §6](./BLUEPRINT.md) for the full diff and rationale of every patch.
 
