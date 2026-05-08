@@ -360,4 +360,225 @@ When refreshing against newer upstreams:
 
 ---
 
+## 11. Windows client build
+
+### 11.1 Toolchain: MSYS2 + MinGW64 (not MSVC)
+
+The upstream Windows build path targets **GCC via MSYS2's MinGW64 environment** — not the MSVC toolchain shipped with Visual Studio Community. Evidence:
+
+- `AdaptixClient/CMakeLists.txt` line 10: `set(Qt6_DIR "C:/msys64/mingw64/lib/cmake")` — hard-coded MSYS2 path; this is load-bearing.
+- Lines 17–19: `if(WIN32 AND MINGW)` guards control static OpenSSL and the `-Wl,-subsystem,windows` linker flag.
+- Lines 297–298: `-static-libgcc -static-libstdc++` and `-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic` are GCC linker flags with no MSVC equivalent.
+- `AdaptixClient/build.bat`: prepends `C:\msys64\mingw64\bin` to `PATH` before invoking CMake with `-G Ninja`.
+
+**Visual Studio Community is not required.** MSYS2 installs a complete GCC toolchain and all dependencies. If you want an IDE on Windows, VS Code with the CMake Tools extension and the MinGW64 kit detected from MSYS2 works well. Do not configure a `cl.exe`/MSVC generator — the link flags and runtime assumptions are MinGW-specific.
+
+### 11.2 Prerequisites
+
+#### Automated install (recommended)
+
+A PowerShell script at the workspace root handles everything below in one command. Run from an elevated (Administrator) PowerShell prompt:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+```
+
+The script installs MSYS2 and Git for Windows via winget, runs the two-pass pacman update, installs all required MinGW64 packages, verifies the binaries, and checks that `Qt6_DIR` in `CMakeLists.txt` matches the MSYS2 path. See the script's inline help (`Get-Help .\install-prereqs-windows.ps1`) for parameters (`-Msys2Root`, `-SkipGit`).
+
+#### Manual install
+
+If you prefer to install by hand or the script hits a snag:
+
+#### Required software
+
+| Software | Notes | Source |
+|---|---|---|
+| **MSYS2** | Install to `C:\msys64` — the CMakeLists.txt `Qt6_DIR` path is hard-coded to this location. | https://www.msys2.org |
+| **Git for Windows** | Needed for the initial clone with `--recurse-submodules`. MSYS2 also ships git but the Windows native client is easier for initial setup. | https://git-scm.com/download/win |
+
+#### Required MSYS2 packages
+
+Open an **MSYS2 MinGW64** shell (Start Menu → "MSYS2 MinGW x64", or run `C:\msys64\msys2_shell.cmd -mingw64`) and run:
+
+```bash
+# Step 1 — update the package database; reopen the shell if prompted, then re-run
+pacman -Syu
+
+# Step 2 — update remaining packages
+pacman -Syu
+
+# Step 3 — compiler toolchain and build tools
+pacman -S --needed \
+  mingw-w64-x86_64-toolchain \
+  mingw-w64-x86_64-cmake \
+  mingw-w64-x86_64-ninja
+
+# Step 4 — Qt6 meta-package (pulls Core, Gui, Widgets, Network, WebSockets, Sql, Qml, Svg)
+pacman -S --needed mingw-w64-x86_64-qt6
+
+# Step 5 — OpenSSL (statically linked per CMakeLists.txt OPENSSL_USE_STATIC_LIBS)
+pacman -S --needed mingw-w64-x86_64-openssl
+```
+
+Approximate disk cost: MSYS2 base (~600 MB) + toolchain (~500 MB) + Qt6 (~2 GB) = **~3 GB total**.
+
+#### Verify the install
+
+From the MSYS2 MinGW64 shell:
+
+```bash
+gcc --version      # x86_64-w64-mingw32-gcc 14.x or later
+cmake --version    # 3.28 or later
+qmake --version    # Qt version 6.x.x in /mingw64
+openssl version    # OpenSSL 3.x
+ninja --version    # 1.x
+```
+
+### 11.3 Repository setup
+
+From a standard Windows `cmd` or PowerShell prompt (Git for Windows):
+
+```cmd
+git clone --recurse-submodules https://github.com/chrisbensch/AdaptixC2-Omni.git
+cd AdaptixC2-Omni
+```
+
+If you already have a clone without submodules:
+
+```cmd
+git submodule update --init --recursive
+```
+
+**MSYS2 path adjustment.** If MSYS2 is not at `C:\msys64`, open `AdaptixC2/AdaptixClient/CMakeLists.txt` and change line 10 to match your actual MSYS2 prefix:
+
+```cmake
+if(WIN32)
+    set(Qt6_DIR "D:/msys64/mingw64/lib/cmake")   # adjust prefix as needed
+endif()
+```
+
+This is a local working-tree edit in the submodule. Do not commit it — the submodule tree must stay clean (see "Cross-cutting conventions" in CLAUDE.md).
+
+### 11.4 Build
+
+The upstream build script is at `AdaptixC2/AdaptixClient/build.bat`. Run it from a standard Windows `cmd` prompt (not from PowerShell or an MSYS2 bash shell — see gotcha #3 in §11.6):
+
+```cmd
+cd AdaptixC2\AdaptixClient
+build.bat
+```
+
+Output lands in `AdaptixC2\AdaptixClient\dist\`:
+- `AdaptixClient.exe`
+- Qt6 DLLs and platform plugins (placed by `windeployqt`)
+- MinGW runtime DLLs (copied explicitly by the script)
+
+To run the client directly from the build host, launch `dist\AdaptixClient.exe`.
+
+#### Manual equivalent (MSYS2 MinGW64 shell)
+
+If `build.bat` is inconvenient, the same steps in bash:
+
+```bash
+cd AdaptixC2/AdaptixClient
+cmake -S . -B cmake-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build cmake-build-release --config Release
+
+mkdir -p dist
+mv cmake-build-release/AdaptixClient.exe dist/
+
+cd dist
+windeployqt.exe AdaptixClient.exe
+
+# Copy MinGW runtime DLLs (adjust ICU version number if needed — see §11.6 gotcha #1)
+for dll in \
+  libwinpthread-1.dll libgcc_s_seh-1.dll libstdc++-6.dll \
+  libfreetype-6.dll libharfbuzz-0.dll libmd4c.dll \
+  libpng16-16.dll zlib1.dll libb2-1.dll libdouble-conversion.dll \
+  libicuin78.dll libicuuc78.dll libicudt78.dll \
+  libpcre2-16-0.dll libpcre2-8-0.dll \
+  libbrotlidec.dll libbrotlicommon.dll \
+  libzstd.dll libbz2-1.dll \
+  libglib-2.0-0.dll libgraphite2.dll \
+  libintl-8.dll libiconv-2.dll; do
+  cp /mingw64/bin/$dll .
+done
+```
+
+### 11.5 What the build does (CMakeLists.txt WIN32 path)
+
+When CMake detects `WIN32` and `MINGW`, the following activates in addition to the common build:
+
+| CMake block | Effect |
+|---|---|
+| `set(Qt6_DIR "C:/msys64/mingw64/lib/cmake")` | Points Qt6 find-package at the MSYS2 installation. |
+| `set(OPENSSL_USE_STATIC_LIBS TRUE)` | OpenSSL is statically embedded in `AdaptixClient.exe` — no OpenSSL DLLs to ship. |
+| `-Wl,-subsystem,windows` | Suppresses the console window on launch. |
+| `target_link_libraries ... wsock32 ws2_32 crypt32 iphlpapi netapi32 version winmm userenv dwmapi` | Windows system libraries for networking, crypto, API version, DWM compositor. |
+| `-static-libgcc -static-libstdc++` | GCC and C++ runtime embedded in the exe. |
+| `-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic` | winpthread statically linked; remaining deps dynamic. |
+
+#### Why runtime DLLs are still needed despite static GCC
+
+`-static-libgcc -static-libstdc++` embeds these runtimes into `AdaptixClient.exe` itself. However, the Qt6 DLLs (`Qt6Core.dll`, `Qt6Widgets.dll`, etc.) were compiled by MSYS2 with **dynamic** GCC runtime linkage. Those DLLs still require `libgcc_s_seh-1.dll` and `libstdc++-6.dll` to be present at runtime alongside them.
+
+#### Runtime DLL reference
+
+| DLL | Provides |
+|---|---|
+| `libwinpthread-1.dll` | POSIX thread shim (winpthread) |
+| `libgcc_s_seh-1.dll` | GCC runtime (SEH exception model) |
+| `libstdc++-6.dll` | C++ standard library |
+| `libfreetype-6.dll` | Font rendering |
+| `libharfbuzz-0.dll` | Text shaping |
+| `libmd4c.dll` | Markdown parser (Qt internals) |
+| `libpng16-16.dll` | PNG decoding |
+| `zlib1.dll` | zlib compression |
+| `libb2-1.dll` | BLAKE2 hash |
+| `libdouble-conversion.dll` | Float↔string conversion (Qt) |
+| `libicuin78.dll` | ICU Unicode — internationalization |
+| `libicuuc78.dll` | ICU Unicode — common |
+| `libicudt78.dll` | ICU Unicode — data |
+| `libpcre2-16-0.dll` | PCRE2 regex (UTF-16) |
+| `libpcre2-8-0.dll` | PCRE2 regex (UTF-8) |
+| `libbrotlidec.dll` | Brotli decompression |
+| `libbrotlicommon.dll` | Brotli common |
+| `libzstd.dll` | Zstandard compression |
+| `libbz2-1.dll` | bzip2 |
+| `libglib-2.0-0.dll` | GLib (HarfBuzz dependency) |
+| `libgraphite2.dll` | Graphite font engine |
+| `libintl-8.dll` | gettext internationalization |
+| `libiconv-2.dll` | Character encoding conversion |
+
+### 11.6 Verification checklist
+
+1. `dir dist\AdaptixClient.exe` — file exists and is non-zero.
+2. `dist\AdaptixClient.exe --help` (or just launch it) — window appears, no missing DLL error dialog.
+3. Connect to `https://<server>:4321/endpoint` — login dialog appears.
+4. Listener creation dialog shows all 9 extenders; AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` loaded.
+
+### 11.7 Known issues and gotchas
+
+1. **ICU DLL version number changes.** The names `libicuin78.dll` / `libicuuc78.dll` / `libicudt78.dll` embed the ICU version (`78`). MSYS2 updates will bump this (to `79`, `80`, etc.). When `build.bat` fails copying these files, find the current version with:
+   ```bash
+   pacman -Qi mingw-w64-x86_64-icu | grep Version
+   ```
+   Then update the three ICU filenames in `build.bat` and in the bash equivalent above.
+
+2. **MSYS2 path is hard-coded in CMakeLists.txt.** `C:/msys64/mingw64/lib/cmake` is set unconditionally for `WIN32` at line 10. Installation to any other path requires a local edit to the submodule file. Keep the submodule tree clean — do not commit this change.
+
+3. **Run `build.bat` from `cmd.exe`, not from PowerShell or an MSYS2 bash shell.** The script uses Windows `copy`/`move` with Windows path separators. PowerShell misinterprets bare `.` in `copy src dst.` as a path component; MSYS2 bash translates backslashes and rejects drive letters. A standard `cmd.exe` prompt is the correct environment.
+
+4. **`windeployqt` must be the MSYS2 MinGW64 binary.** `build.bat` prepends `C:\msys64\mingw64\bin` to `PATH` to ensure this. If a second Qt installation (official Qt installer, vcpkg) is already on the system PATH, it may shadow the MSYS2 `windeployqt` and deploy mismatched DLLs. Clear the system PATH of other Qt entries before running the build, or invoke `build.bat` from a fresh `cmd` with no other Qt present.
+
+5. **`build.bat` syntax defect in lines 17–19 (upstream).** Each of the first three `copy` commands has a period glued to the closing quote (`copy "...\libwinpthread-1.dll".`), which Windows `copy` misinterprets as the destination path. Lines 20–22 repeat the same copies with a corrected trailing space + `.` and succeed; the net result is correct. This defect should be fixed in any improved build script written for this workspace.
+
+6. **No console window in release builds.** `-Wl,-subsystem,windows` hides the console. `printf`/`qDebug()` output and crash messages will not appear in a terminal. For a debug build, temporarily remove this linker flag by configuring with `-DCMAKE_BUILD_TYPE=Debug` and setting `CMAKE_EXE_LINKER_FLAGS` to omit `-Wl,-subsystem,windows`.
+
+7. **No code signing.** The exe and DLLs are unsigned. Windows Defender SmartScreen will block first-run execution on a clean system ("Windows protected your PC"). Right-click → "Run anyway" clears the block for that session. For team distribution, sign with a code-signing certificate and optionally submit for reputation to suppress SmartScreen.
+
+8. **Vendored Konsole terminal widget is Windows-compatible.** `AdaptixClient/Libs/Konsole/` contains no X11, PTY, or POSIX `#ifdef` guards. The widget renders VT102 escape sequences over a data channel from `TerminalWorker.cpp` and ships `windows_conpty.keytab` / `windows_winpty.keytab` keybinding tables. No porting work is needed for the terminal widget.
+
+---
+
 End of blueprint. If you (future Claude) need to reconstruct any specific file, prefer reading it from disk first — only fall back to recreating from this document if the file is missing.

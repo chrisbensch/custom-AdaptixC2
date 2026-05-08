@@ -96,6 +96,21 @@ brew install cmake qt@6 openssl@3
 
 The script applies the macOS-bundle patch on entry, builds, fixes RPATHs for portability, ad-hoc signs the bundle, and reverts the patch on exit so the AdaptixC2 submodule tree stays clean.
 
+**Windows x86_64 (native build on a Windows machine):**
+
+```powershell
+# Step 1 — install prerequisites (once per machine, from an Administrator PowerShell):
+powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+# Installs MSYS2 + Git via winget, then all MinGW64 packages (~2 GB, 5-15 min).
+
+# Step 2 — build (from a standard cmd.exe prompt, not PowerShell):
+cd AdaptixC2\AdaptixClient
+build.bat
+# → dist\AdaptixClient.exe + bundled DLLs
+```
+
+The upstream build uses **MSYS2 + MinGW64 + Ninja** — Visual Studio / MSVC is not required. See [BLUEPRINT.md §11](./BLUEPRINT.md) for the complete prerequisites, per-step explanation, DLL reference table, and all Windows-specific gotchas (including the ICU version-bump issue and the `windeployqt` PATH requirement).
+
 ### 4. Connect
 
 Point the client at `https://<server-host>:4321/endpoint` and log in. The listener-creation dialog will show all nine extenders; the AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` already loaded.
