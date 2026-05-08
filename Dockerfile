@@ -10,7 +10,8 @@
 # ============================================
 # Stage: base — toolchains for every component
 # ============================================
-FROM --platform=linux/amd64 golang:1.25-bookworm AS base
+#FROM --platform=linux/amd64 golang:1.25-bookworm AS base
+FROM golang:1.25-bookworm AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOEXPERIMENT=jsonv2,greenteagc
