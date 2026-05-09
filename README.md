@@ -29,6 +29,7 @@ Plus separate workflows for the GUI clients:
 
 - **Linux AppImage** (x86_64) built inside a Docker container — reuses the upstream `build-client` Dockerfile stage, no duplication.
 - **macOS .app bundle** (Apple Silicon / arm64) built natively via Homebrew Qt, with portable RPATHs and ad-hoc signing — Adaptix does not ship an official macOS build.
+- **Windows exe** (x86_64) built natively on a Windows machine using MSYS2 + MinGW64; `install-prereqs-windows.ps1` automates the prerequisite setup.
 
 ---
 
@@ -130,6 +131,7 @@ AdaptixC2-Omni/
 ├── docker-compose.yml    ← profiles: build / runtime / build-client
 ├── profile.kharon.yaml   ← merged server profile, 9 extenders + 2 axscripts
 ├── build-client-macos.sh ← native macOS .app build (Apple Silicon arm64)
+├── install-prereqs-windows.ps1 ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6)
 ├── patches/              ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch
 │   └── extension-kit-nanodump-host-strip.patch
@@ -159,6 +161,7 @@ Every customization is either a workspace-root file we authored or a tracked pat
 | macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `build-client-macos.sh` applies and reverts it around each build. |
 | nanodump host-strip fix | `patches/extension-kit-nanodump-host-strip.patch` | Upstream nanodump strips its host-built `restore_signature` ELF with the Windows cross-strip, which breaks on arm64 hosts. The patch deletes the redundant strip line; `gcc -s` on the prior line already strips it. Applied inside the build container by the Dockerfile. |
 | macOS native build script | `build-client-macos.sh` | macdeployqt + RPATH cleanup + ad-hoc signing — required to produce a portable Apple Silicon `.app` that launches outside the build host. |
+| Windows prerequisite installer | `install-prereqs-windows.ps1` | Automates the one-time setup of MSYS2, MinGW64 toolchain, Qt6, OpenSSL, CMake, and Ninja needed by `build.bat` on a Windows machine. |
 | Kharon graft inside the build | (Dockerfile-only, no source-tree change) | The Dockerfile copies `Kharon/agent_kharon` and `Kharon/listener_kharon_http` into `AdaptixServer/extenders/` and runs `go work use` *inside* the container, mirroring what `Kharon/setup_kharon.sh` does — but only inside the build, never on the host tree. |
 | Build-context hygiene | `.dockerignore` | Excludes `**/.git` so submodule `.git` pointer files (which reference paths outside the build context) don't break in-container `git apply`. |
 

@@ -27,6 +27,7 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 ├── docker-compose.yml    ← services for build/runtime/build-client
 ├── profile.kharon.yaml   ← merged server profile, 9 extenders + 2 axscripts
 ├── build-client-macos.sh ← native macOS .app build script (Apple Silicon arm64)
+├── install-prereqs-windows.ps1 ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6; see §11)
 │
 ├── patches/                                       ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch           ← see §5.5 / §6.1
@@ -294,6 +295,13 @@ docker compose --profile build-client up --abort-on-container-exit
 ./build-client-macos.sh           # plain
 ./build-client-macos.sh --clean   # wipe build dir first
 ./build-client-macos.sh --dmg     # also produce .dmg
+
+# Windows client exe  (on a Windows machine; see §11 for full details)
+# Step 1 — install prerequisites once per machine (elevated PowerShell):
+#   powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+# Step 2 — build (standard cmd.exe):
+#   cd AdaptixC2\AdaptixClient && build.bat
+#   → AdaptixC2\AdaptixClient\dist\AdaptixClient.exe + bundled DLLs
 ```
 
 ## 8. Verification checklist
@@ -315,6 +323,12 @@ docker compose --profile build-client up --abort-on-container-exit
 3. `codesign -dv …` → `Signature=adhoc`, `Identifier=io.adaptix.client`
 4. **Portability:** `cp -R AdaptixClient.app /tmp/ && /tmp/AdaptixClient.app/Contents/MacOS/AdaptixClient` — must launch (don't just open the original location).
 5. `open AdaptixClient-dist/AdaptixClient.app` — Gatekeeper may prompt on first launch (right-click → Open clears it).
+
+**Windows client exe** (run on the Windows build machine):
+1. `dir AdaptixC2\AdaptixClient\dist\AdaptixClient.exe` → file exists and is non-zero.
+2. Launch `dist\AdaptixClient.exe` — window appears, no missing-DLL error dialog. SmartScreen may prompt on first run; right-click → "Run anyway" clears it.
+3. Connect to `https://<server>:4321/endpoint` — login dialog appears and authenticates.
+4. Listener creation dialog shows all 9 extenders; AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` loaded.
 
 ## 9. Known issues and gotchas
 
