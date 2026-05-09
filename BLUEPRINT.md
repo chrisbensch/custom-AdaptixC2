@@ -67,7 +67,7 @@ These are the exact commits the integration was designed for. When re-applying a
 These were resolved up-front via `AskUserQuestion`. Repeat them if re-running the planning.
 
 1. **Server runtime layout:** all artifacts (server, extenders, BOFs, axscripts, profile, kharon template) baked into the runtime image. No host-mounted scripts/BOFs.
-2. **profile.yaml:** ship a finalized `profile.kharon.yaml` — no envsubst at start, no template mounting.
+2. **profile.yaml:** `profile.kharon.yaml` is baked into the image at build time (`COPY` in the runtime stage) so the image is self-contained and works with bare `docker run`. The `docker-compose.yml` `server` service additionally bind-mounts `./profile.kharon.yaml:/app/profile.yaml:ro`, making the host file authoritative when running via compose — edit it and `docker compose restart` to apply changes without a rebuild.
 3. **PostEx-Arsenal `postex_sc/`:** trust the checked-in `.bin` files; do not rebuild in the container (saves clang/llvm/nasm runtime in postex_sc subdirs).
 4. **macOS bundle:** patch `AdaptixClient/CMakeLists.txt` with `MACOSX_BUNDLE` properties guarded by `if(APPLE)`. Build natively via Homebrew Qt, then `macdeployqt` + RPATH cleanup + ad-hoc resign.
 5. **macOS arch:** Apple Silicon **arm64 only** (no universal binary).
@@ -93,7 +93,7 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
   - `/src/AdaptixC2/dist/` → `/app/` (server, ssl_gen.sh, 404page.html, all 9 extenders)
   - `/src/Extension-Kit` → `/app/Extension-Kit`
   - `/src/PostEx-Arsenal` → `/app/PostEx-Arsenal`
-  - workspace `profile.kharon.yaml` → `/app/profile.yaml` (overwrites upstream default)
+  - workspace `profile.kharon.yaml` → `/app/profile.yaml` (baked-in fallback; shadowed at runtime by the compose volume mount)
   - `Kharon/listener_kharon_http/profiles/template.json` → `/app/kharon-template.json`
   - generates `/app/entrypoint.sh` inline (cert-gen on first run, then exec server)
 - `EXPOSE 4321 80 443 8080 8443`. `ENTRYPOINT /app/entrypoint.sh`. `CMD /app/adaptixserver -profile /app/profile.yaml`.
@@ -125,6 +125,7 @@ services:
     network_mode: host
     volumes:
       - ./data:/app/data
+      - ./profile.kharon.yaml:/app/profile.yaml:ro
     environment:
       - TZ=${TZ:-UTC}
     restart: unless-stopped
@@ -246,7 +247,7 @@ These changes are made **inside the Dockerfile** and do not touch the host sourc
 - `AdaptixC2/AdaptixServer/extenders/agent_kharon` — populated by `COPY Kharon/agent_kharon …` in the Dockerfile.
 - `AdaptixC2/AdaptixServer/extenders/listener_kharon_http` — populated by `COPY Kharon/listener_kharon_http …`.
 - `AdaptixC2/AdaptixServer/go.work` — `go work use` appends two entries during the build. (`setup_kharon.sh` is the upstream-provided script doing this; we inline the same logic.)
-- `AdaptixC2/AdaptixServer/profile.yaml` — replaced inside the runtime image by the workspace-root `profile.kharon.yaml`.
+- `AdaptixC2/AdaptixServer/profile.yaml` — replaced inside the runtime image by the workspace-root `profile.kharon.yaml` (baked in at build time; the compose `server` service also bind-mounts the host copy at `/app/profile.yaml:ro`, so edits to the host file take effect on the next `docker compose restart` without a rebuild).
 
 These should NOT be committed to a submodule working tree — keep them clean so `git status` in any submodule stays empty between builds. The `patches/` mechanism (§5.5), the `trap`-based revert in `build-client-macos.sh`, and the in-container `git apply` for §6.3 enforce this; everything else is Dockerfile-side.
 

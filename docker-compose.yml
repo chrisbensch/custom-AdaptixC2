@@ -24,6 +24,7 @@ services:
     network_mode: host
     volumes:
       - ./data:/app/data
+      - ./profile.kharon.yaml:/app/profile.yaml:ro
     environment:
       - TZ=${TZ:-UTC}
     restart: unless-stopped

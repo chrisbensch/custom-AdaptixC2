@@ -71,7 +71,7 @@ docker compose --profile runtime logs -f
 docker compose --profile runtime down
 ```
 
-Default operator credentials live in [`profile.kharon.yaml`](./profile.kharon.yaml) — `operator1:pass1` and `operator2:pass2`. **Change these before exposing the server beyond loopback.**
+Default operator credentials live in [`profile.kharon.yaml`](./profile.kharon.yaml) — `operator1:pass1` and `operator2:pass2`. **Change these before exposing the server beyond loopback.** When running via `docker compose`, `profile.kharon.yaml` is bind-mounted into the container, so you can edit it and run `docker compose --profile runtime restart` to apply changes without rebuilding the image.
 
 ### 3. Build a client
 
