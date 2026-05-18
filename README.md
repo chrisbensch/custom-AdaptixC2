@@ -255,6 +255,6 @@ If you find a bug in the framework, an agent, or a BOF, please file it upstream 
 
 ## License
 
-The build harness in this repository (`Dockerfile`, `docker-compose.yml`, `profile.kharon.yaml`, `build-client-macos.sh`, `patches/`, `BLUEPRINT.md`, `CLAUDE.md`, `README.md`) does not yet have an explicit license — please open an issue or contact the author before redistributing it as a standalone artifact.
+The build harness in this repository (`Dockerfile`, `docker-compose.yml`, `profile.kharon.yaml`, `build-client-macos.sh`, `install-prereqs-windows.ps1`, `patches/`, `docker/`, `.github/`, `BLUEPRINT.md`, `CLAUDE.md`, `README.md`) is released under the [MIT License](./LICENSE).
 
 Submodule contents are governed by their own upstream licenses; consult each submodule's `LICENSE` file before redistribution. In particular, AdaptixC2 carries explicit notices about authorized use that you must preserve.

@@ -1,0 +1,44 @@
+name: build
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays 06:17 UTC — catches upstream submodule drift and patch decay.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: docker/setup-buildx-action@v3
+      - name: Build runtime image
+        run: docker compose --profile build build
+      - name: Smoke-test the runtime image
+        run: |
+          mkdir -p data
+          docker run -d --name omni-smoke -p 4321:4321 \
+              -v "$PWD/data:/app/data" \
+              -e ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw \
+              adaptixc2-omni:latest
+          for i in $(seq 1 30); do
+              status=$(docker inspect --format '{{.State.Health.Status}}' omni-smoke 2>/dev/null || echo none)
+              echo "[$i] health=$status"
+              [ "$status" = "healthy" ] && exit 0
+              sleep 3
+          done
+          echo "--- docker logs ---"
+          docker logs omni-smoke
+          exit 1
+      - name: Tear down
+        if: always()
+        run: docker rm -f omni-smoke 2>/dev/null || true
