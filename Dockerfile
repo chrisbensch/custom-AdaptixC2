@@ -12,7 +12,7 @@
 # ============================================
 # Stage: base — toolchains for every component
 # ============================================
-FROM golang:1.25-bookworm AS base
+FROM golang:1.25.4-bookworm AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOEXPERIMENT=jsonv2,greenteagc
@@ -38,7 +38,11 @@ RUN apt-get update && \
 
 # go-win7: Windows 7 / Server 2008 R2 compatible Go runtime, required by Gopher Agent
 # and consumed by Kharon's beacon build chain.
-RUN git clone --depth=1 https://github.com/Adaptix-Framework/go-win7 /usr/lib/go-win7 && \
+# Pinned to a specific commit so the build is reproducible. Bump the SHA when
+# refreshing — see BLUEPRINT.md upgrade flow.
+ARG GO_WIN7_SHA=15ad42baf018e90cd5a56a4d5886e8cf6a75065e
+RUN git clone https://github.com/Adaptix-Framework/go-win7 /usr/lib/go-win7 && \
+    git -C /usr/lib/go-win7 checkout "$GO_WIN7_SHA" && \
     mkdir -p /usr/lib/go-win7/pkg/include && \
     cd /usr/lib/go-win7/src/runtime && \
     for f in *.h; do ln -sf /usr/lib/go-win7/src/runtime/$f /usr/lib/go-win7/pkg/include/$f; done
@@ -122,28 +126,18 @@ COPY --from=build-server /src/AdaptixC2/dist/ /app/
 COPY --from=build-bofs /src/Extension-Kit  /app/Extension-Kit
 COPY --from=build-bofs /src/PostEx-Arsenal /app/PostEx-Arsenal
 
-# Final wiring: profile.yaml (replaces the upstream default) + Kharon listener template.
-COPY profile.kharon.yaml                              /app/profile.yaml
+# Profile template + Kharon listener template. The runtime profile is rendered
+# from profile.yaml.tmpl into /app/data/profile.yaml on first start, with
+# credentials taken from env (ADAPTIX_TEAMSERVER_PASSWORD, ADAPTIX_OPERATORS)
+# or randomly generated. See docker/entrypoint.sh.
+COPY profile.kharon.yaml                              /app/profile.yaml.tmpl
 COPY Kharon/listener_kharon_http/profiles/template.json /app/kharon-template.json
 
-# Entrypoint: generate self-signed certs on first run (matches AdaptixC2/Dockerfile
-# runtime stage behavior), then exec the server.
-RUN printf '%s\n' \
-    '#!/bin/bash' \
-    'set -e' \
-    'echo "[*] Starting Adaptix C2 Server..."' \
-    'if [ ! -f /app/server.rsa.crt ] || [ ! -f /app/server.rsa.key ]; then' \
-    '    echo "[*] Generating self-signed certificates..."' \
-    '    cd /app && openssl req -x509 -nodes -newkey rsa:2048 \' \
-    '        -keyout server.rsa.key -out server.rsa.crt -days 3650 \' \
-    '        -subj "/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost"' \
-    '    echo "[+] Certificates generated"' \
-    'fi' \
-    'echo "[+] Launching Adaptix Server..."' \
-    'exec "$@"' \
-    > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# First-start bootstrap: TLS cert generation + profile rendering.
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 4321 80 443 8080 8443
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["/app/adaptixserver", "-profile", "/app/profile.yaml"]
+CMD ["/app/adaptixserver", "-profile", "/app/data/profile.yaml"]

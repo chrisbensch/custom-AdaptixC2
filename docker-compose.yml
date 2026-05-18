@@ -23,10 +23,15 @@ services:
     container_name: adaptixc2-omni-server
     network_mode: host
     volumes:
+      # The runtime profile (./data/profile.yaml) is rendered by the entrypoint
+      # on first start. Edit it there and `restart` to apply changes.
       - ./data:/app/data
-      - ./profile.kharon.yaml:/app/profile.yaml:ro
     environment:
       - TZ=${TZ:-UTC}
+      # Override credentials by uncommenting and setting before first start.
+      # See README.md for ADAPTIX_OPERATORS format.
+      # - ADAPTIX_TEAMSERVER_PASSWORD=
+      # - ADAPTIX_OPERATORS=operator1:secret1,operator2:secret2
     restart: unless-stopped
 
   # Linux AppImage build. Reuses AdaptixC2/Dockerfile's build-client stage as-is

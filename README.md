@@ -71,7 +71,15 @@ docker compose --profile runtime logs -f
 docker compose --profile runtime down
 ```
 
-Default operator credentials live in [`profile.kharon.yaml`](./profile.kharon.yaml) — `operator1:pass1` and `operator2:pass2`. **Change these before exposing the server beyond loopback.** When running via `docker compose`, `profile.kharon.yaml` is bind-mounted into the container, so you can edit it and run `docker compose --profile runtime restart` to apply changes without rebuilding the image.
+On first start the entrypoint generates random teamserver credentials, writes them to `./data/credentials.txt`, and prints the teamserver password to the container log. To set your own values instead, export them before the first `up`:
+
+```bash
+export ADAPTIX_TEAMSERVER_PASSWORD='your-strong-password'
+export ADAPTIX_OPERATORS='operator1:secret1,operator2:secret2'
+docker compose --profile runtime up -d
+```
+
+The rendered profile lives at `./data/profile.yaml` and is reused on subsequent starts. To rotate credentials or change other settings, edit that file and run `docker compose --profile runtime restart`. The committed [`profile.kharon.yaml`](./profile.kharon.yaml) is the *template* used at first render; editing it after first start has no effect — delete `./data/profile.yaml` and restart to re-render from the template.
 
 ### 3. Build a client
 
@@ -180,7 +188,13 @@ The submodules are locked to these SHAs:
 | Kharon | [entropy-z/Kharon](https://github.com/entropy-z/Kharon) | `699ece7` | 2026-04-02 |
 | PostEx-Arsenal | [entropy-z/PostEx-Arsenal](https://github.com/entropy-z/PostEx-Arsenal) | `e169261` | 2026-03-13 |
 
-Bumping any of these is a single submodule-bump commit (see below).
+Plus one upstream that's pulled in during the Docker build (not a submodule, pinned via `ARG` in the Dockerfile):
+
+| Build-time dep | Source | Commit |
+|---|---|---|
+| go-win7 | [Adaptix-Framework/go-win7](https://github.com/Adaptix-Framework/go-win7) | `15ad42b` |
+
+Bumping any submodule is a single submodule-bump commit (see below). Bumping `go-win7` is a one-line edit to the `GO_WIN7_SHA` ARG in [`Dockerfile`](./Dockerfile).
 
 ---
 
