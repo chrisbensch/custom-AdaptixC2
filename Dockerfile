@@ -55,15 +55,27 @@ WORKDIR /src
 FROM base AS build-bofs
 
 # Extension-Kit: 10 BOF subdirectories, each emits .x64.o / .x32.o into its _bin/.
-# SAL-BOF/Makefile fetches a vulnerable-driver list via python3; allowed to fail offline,
-# the rest of the BOFs still build.
 # patches/extension-kit-*.patch fixes upstream Makefile bugs that surface on arm64
 # hosts (see patches/ for details). Applied via `git apply` (works without .git).
 COPY Extension-Kit /src/Extension-Kit
 COPY patches /src/patches
 RUN cd /src/Extension-Kit && \
     git apply --verbose /src/patches/extension-kit-nanodump-host-strip.patch
-RUN make -C /src/Extension-Kit
+
+# Build the offline-safe BOF subdirs first (strict failure).
+# Hard-coded list rather than `make -k` so a real bug in any of these still fails
+# the build. If upstream adds a new BOF subdir, add it here (CI catches drift).
+RUN set -eux; \
+    for d in AD-BOF Creds-BOF Elevation-BOF Execution-BOF Injection-BOF \
+             LateralMovement-BOF Postex-BOF Process-BOF SAR-BOF; do \
+        make -C /src/Extension-Kit/$d; \
+    done
+
+# SAL-BOF fetches a vulnerable-driver list via python3 over the network at build
+# time. Offline builds tolerate its failure — every other BOF has already shipped
+# above. To force a clean failure when offline-building, drop the `|| echo …`.
+RUN make -C /src/Extension-Kit/SAL-BOF || \
+    echo "[!] SAL-BOF build failed (likely offline) — continuing"
 
 # PostEx-Arsenal: cross-compiles .cc → bofs/dist/*.x64.o.
 # postex_sc/*/bin/*.bin are committed pre-built per plan; carried through unchanged.
@@ -95,9 +107,13 @@ RUN make -C /src/AdaptixC2 server-ext
 # extender's dist/ for runtime payload generation.
 RUN make -C /src/AdaptixC2/AdaptixServer/extenders/agent_kharon agent
 
-# After 'make agent' runs in-source, the AdaptixC2 top-level Makefile already moved the
-# extender's dist into /src/AdaptixC2/dist/extenders/agent_kharon. Re-sync any artifacts
-# the in-source build produced after that move.
+# Two-pass dist reconciliation (intentional — do not collapse without verifying):
+#   - `make server-ext` (above) builds the Go plugin and moves the extender's
+#     dist into /src/AdaptixC2/dist/extenders/agent_kharon.
+#   - `make agent` (above, in the extender source tree) compiles the PIC beacon
+#     under src_beacon/ and re-stages it into the *source* dist/ directory.
+# We copy the second-pass artifacts back over the first-pass layout so the
+# runtime image ships the beacon binaries alongside the plugin .so.
 RUN if [ -d /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist ]; then \
         cp -r /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist/. \
               /src/AdaptixC2/dist/extenders/agent_kharon/; \
@@ -113,6 +129,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
+        curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -137,7 +154,16 @@ COPY Kharon/listener_kharon_http/profiles/template.json /app/kharon-template.jso
 COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 4321 80 443 8080 8443
+# EXPOSE is a no-op under network_mode: host (the compose runtime default).
+# Kept for `docker run -P` users: 4321 is the teamserver. Beacon listener ports
+# are operator-defined at runtime and not knowable at image-build time.
+EXPOSE 4321
+
+# Confirms TLS handshake + HTTP layer up; curl exits non-zero on connect/TLS/timeout
+# failure. `/endpoint` is a WebSocket upgrade and won't 2xx on a plain GET — we
+# only care that the server *responded*, so no `-f`.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sk --max-time 5 -o /dev/null https://127.0.0.1:4321/endpoint || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["/app/adaptixserver", "-profile", "/app/data/profile.yaml"]
