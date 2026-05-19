@@ -39,7 +39,7 @@ done
 OS_ARCH="$(uname -sm)"
 if [[ "$OS_ARCH" != "Darwin arm64" ]]; then
     echo "[!] This script targets Apple Silicon macOS only (got: $OS_ARCH)." >&2
-    echo "    For Linux, use: docker compose --profile build-client up --build --abort-on-container-exit" >&2
+    echo "    For Linux, use: ./build-client-linux.sh" >&2
     exit 1
 fi
 

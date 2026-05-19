@@ -34,21 +34,28 @@ services:
       # - ADAPTIX_OPERATORS=operator1:secret1,operator2:secret2
     restart: unless-stopped
 
-  # Linux AppImage build. Reuses AdaptixC2/Dockerfile's build-client stage as-is
-  # (Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool).
-  # Pinned linux/amd64 because the AppImage target is x86_64 by definition;
-  # builds under QEMU on arm64 hosts.
+  # Linux AppImage build. Drives AdaptixC2/Dockerfile's build-client stage with
+  # the multiarch patch applied (Qt 6.9.2 via aqtinstall, ubuntu:22.04).
+  # amd64 keeps linuxdeployqt + appimagetool; arm64 swaps to linuxdeploy +
+  # linuxdeploy-plugin-qt because linuxdeployqt has no aarch64 release.
+  # Defaults reproduce the original amd64 path; build-client-linux.sh sets the
+  # ADAPTIX_CLIENT_* env vars when --arch arm64 is requested.
   client-linux:
     profiles: ["build-client"]
-    platform: linux/amd64
+    platform: ${ADAPTIX_CLIENT_PLATFORM:-linux/amd64}
     build:
       context: ./AdaptixC2
       dockerfile: Dockerfile
       target: build-client
       platforms:
-        - linux/amd64
-    image: adaptixc2-omni-client-linux-builder:latest
-    container_name: adaptixc2-omni-client-linux-builder
+        - ${ADAPTIX_CLIENT_PLATFORM:-linux/amd64}
+      args:
+        QT_DIR_NAME: ${ADAPTIX_CLIENT_QT_DIR_NAME:-gcc_64}
+        QT_HOST_ARCH: ${ADAPTIX_CLIENT_QT_HOST_ARCH:-linux_gcc_64}
+        IMG_ARCH: ${ADAPTIX_CLIENT_IMG_ARCH:-x86_64}
+        DEPLOY_TOOL: ${ADAPTIX_CLIENT_DEPLOY_TOOL:-linuxdeployqt}
+    image: adaptixc2-omni-client-linux-builder:${ADAPTIX_CLIENT_ARCH:-amd64}
+    container_name: adaptixc2-omni-client-linux-builder-${ADAPTIX_CLIENT_ARCH:-amd64}
     volumes:
       - ./AdaptixClient-dist:/client-dist-output
     command: sh -c "cp -r /client-dist/. /client-dist-output/"

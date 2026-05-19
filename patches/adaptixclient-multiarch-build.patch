@@ -1,0 +1,153 @@
+Multi-arch (amd64 + arm64) Linux client build for the build-client stage.
+
+Adds four build args (defaulted to the original x86_64 values, so an
+override-less build is byte-equivalent to the upstream Dockerfile) and uses
+them to parameterize:
+
+  - aqt install-qt host arch (linux_gcc_64 vs linux_gcc_arm64)
+  - the /opt/qt/<VER>/{gcc_64,gcc_arm64} install directory in every ENV
+    declaration and RUN reference (PATH, CMAKE_PREFIX_PATH, LD_LIBRARY_PATH,
+    QT_DIR, sqldrivers cleanup, cmake --build, deploy step QMAKE)
+  - appimagetool / CMake download tags (x86_64 vs aarch64)
+  - deploy tooling (DEPLOY_TOOL): amd64 keeps linuxdeployqt unchanged;
+    arm64 swaps to linuxdeploy + linuxdeploy-plugin-qt, because
+    probonopd/linuxdeployqt publishes no aarch64 build.
+
+Output filename becomes AdaptixClient-${IMG_ARCH}.AppImage so x86_64 and
+aarch64 AppImages coexist in the dist dir.
+
+Defaults reproduce the original behavior exactly, so running the upstream
+docker build with no --build-arg overrides yields the same image.
+
+diff --git a/Dockerfile b/Dockerfile
+index 1cdff70..9451f29 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -23,6 +23,17 @@ FROM ubuntu:22.04 AS build-client
+ ENV DEBIAN_FRONTEND=noninteractive
+ ENV QT_VERSION=6.9.2
+
++# Multi-arch build args. Defaults preserve the original x86_64 path; override
++# all four together from the build caller to target arm64. linuxdeployqt has
++# no aarch64 release, so DEPLOY_TOOL=linuxdeploy switches to linuxdeploy +
++# linuxdeploy-plugin-qt (both ship aarch64).
++# For arm64 builds, pass:
++#   QT_DIR_NAME=gcc_arm64 QT_HOST_ARCH=linux_gcc_arm64 IMG_ARCH=aarch64 DEPLOY_TOOL=linuxdeploy
++ARG QT_DIR_NAME=gcc_64
++ARG QT_HOST_ARCH=linux_gcc_64
++ARG IMG_ARCH=x86_64
++ARG DEPLOY_TOOL=linuxdeployqt
++
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+     build-essential \
+     cmake \
+@@ -57,37 +68,55 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
+ # Install Qt via aqtinstall
+ RUN python3 -m pip install --upgrade pip setuptools wheel && \
+     pip3 install --no-cache-dir --default-timeout=100 aqtinstall && \
+-    aqt install-qt linux desktop ${QT_VERSION} linux_gcc_64 \
++    aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_ARCH} \
+     -m qtwebsockets qtnetworkauth \
+     -O /opt/qt
+
+-ENV PATH="/usr/local/bin:/opt/qt/${QT_VERSION}/gcc_64/bin:$PATH"
+-
+-# Install linuxdeployqt and appimagetool
+-RUN wget -q https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage \
+-    -O /usr/local/bin/linuxdeployqt && \
+-    chmod +x /usr/local/bin/linuxdeployqt && \
+-    wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+-    -O /usr/local/bin/appimagetool && \
++ENV PATH="/usr/local/bin:/opt/qt/${QT_VERSION}/${QT_DIR_NAME}/bin:$PATH"
++
++# Install deploy tool(s) and appimagetool. amd64 keeps linuxdeployqt;
++# arm64 uses linuxdeploy + linuxdeploy-plugin-qt (both pre-extracted to /opt
++# and symlinked into PATH so linuxdeploy can find the plugin by name).
++RUN if [ "$DEPLOY_TOOL" = "linuxdeployqt" ]; then \
++        wget -q https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage \
++            -O /usr/local/bin/linuxdeployqt && \
++        chmod +x /usr/local/bin/linuxdeployqt; \
++    elif [ "$DEPLOY_TOOL" = "linuxdeploy" ]; then \
++        mkdir -p /tmp/ldd && cd /tmp/ldd && \
++        wget -q "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${IMG_ARCH}.AppImage" && \
++        wget -q "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${IMG_ARCH}.AppImage" && \
++        chmod +x "linuxdeploy-${IMG_ARCH}.AppImage" "linuxdeploy-plugin-qt-${IMG_ARCH}.AppImage" && \
++        "./linuxdeploy-${IMG_ARCH}.AppImage" --appimage-extract >/dev/null && \
++        mv squashfs-root /opt/linuxdeploy && \
++        ln -sf /opt/linuxdeploy/AppRun /usr/local/bin/linuxdeploy && \
++        "./linuxdeploy-plugin-qt-${IMG_ARCH}.AppImage" --appimage-extract >/dev/null && \
++        mv squashfs-root /opt/linuxdeploy-plugin-qt && \
++        ln -sf /opt/linuxdeploy-plugin-qt/AppRun /usr/local/bin/linuxdeploy-plugin-qt && \
++        cd / && rm -rf /tmp/ldd; \
++    else \
++        echo "Unsupported DEPLOY_TOOL=$DEPLOY_TOOL" >&2; exit 1; \
++    fi && \
++    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${IMG_ARCH}.AppImage" \
++        -O /usr/local/bin/appimagetool && \
+     chmod +x /usr/local/bin/appimagetool
+
+ # Install CMake 3.31.6
+-RUN wget -qO- "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz" | \
++RUN wget -qO- "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-${IMG_ARCH}.tar.gz" | \
+     tar --strip-components=1 -xz -C /usr/local
+
+-RUN cd /opt/qt/${QT_VERSION}/gcc_64/plugins/sqldrivers && \
++RUN cd /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/plugins/sqldrivers && \
+     rm -f libqsqlmimer.so* libqsqlmysql.so* libqsqlpsql.so* libqsqlodbc.so* 2>/dev/null || true && \
+-    rm -f /opt/qt/${QT_VERSION}/gcc_64/lib/cmake/Qt6Sql/Qt6QMYSQLDriverPlugin*.cmake 2>/dev/null || true && \
+-    rm -f /opt/qt/${QT_VERSION}/gcc_64/lib/cmake/Qt6Sql/Qt6QPSQLDriverPlugin*.cmake 2>/dev/null || true && \
+-    rm -f /opt/qt/${QT_VERSION}/gcc_64/lib/cmake/Qt6Sql/Qt6QODBCDriverPlugin*.cmake 2>/dev/null || true && \
+-    rm -f /opt/qt/${QT_VERSION}/gcc_64/lib/cmake/Qt6Sql/Qt6QMimerSQLDriverPlugin*.cmake 2>/dev/null || true && \
++    rm -f /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib/cmake/Qt6Sql/Qt6QMYSQLDriverPlugin*.cmake 2>/dev/null || true && \
++    rm -f /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib/cmake/Qt6Sql/Qt6QPSQLDriverPlugin*.cmake 2>/dev/null || true && \
++    rm -f /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib/cmake/Qt6Sql/Qt6QODBCDriverPlugin*.cmake 2>/dev/null || true && \
++    rm -f /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib/cmake/Qt6Sql/Qt6QMimerSQLDriverPlugin*.cmake 2>/dev/null || true && \
+     sed -i 's/QMYSQLDriverPlugin//g; s/QPSQLDriverPlugin//g; s/QODBCDriverPlugin//g; s/QMimerSQLDriverPlugin//g' \
+-        /opt/qt/${QT_VERSION}/gcc_64/lib/cmake/Qt6Sql/Qt6SqlPlugins.cmake 2>/dev/null || true && \
+-    ls -la /opt/qt/${QT_VERSION}/gcc_64/plugins/sqldrivers/
++        /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib/cmake/Qt6Sql/Qt6SqlPlugins.cmake 2>/dev/null || true && \
++    ls -la /opt/qt/${QT_VERSION}/${QT_DIR_NAME}/plugins/sqldrivers/
+
+-ENV CMAKE_PREFIX_PATH="/opt/qt/${QT_VERSION}/gcc_64"
+-ENV LD_LIBRARY_PATH="/opt/qt/${QT_VERSION}/gcc_64/lib"
+-ENV QT_DIR="/opt/qt/${QT_VERSION}/gcc_64"
++ENV CMAKE_PREFIX_PATH="/opt/qt/${QT_VERSION}/${QT_DIR_NAME}"
++ENV LD_LIBRARY_PATH="/opt/qt/${QT_VERSION}/${QT_DIR_NAME}/lib"
++ENV QT_DIR="/opt/qt/${QT_VERSION}/${QT_DIR_NAME}"
+
+ WORKDIR /src
+ COPY ./AdaptixClient /src
+@@ -95,7 +124,7 @@ COPY ./AdaptixClient /src
+ # Build client
+ RUN cmake -B build \
+     -DCMAKE_BUILD_TYPE=Release \
+-    -DCMAKE_PREFIX_PATH=/opt/qt/${QT_VERSION}/gcc_64 && \
++    -DCMAKE_PREFIX_PATH=/opt/qt/${QT_VERSION}/${QT_DIR_NAME} && \
+     cmake --build build -j$(nproc)
+
+ # Prepare AppDir structure
+@@ -111,13 +140,18 @@ RUN mkdir -p /client-dist/AdaptixClient.AppDir/usr/bin && \
+
+ # Deploy Qt libraries and create AppImage
+ RUN cd /client-dist && \
+-    /usr/local/bin/linuxdeployqt --appimage-extract && \
+-    ./squashfs-root/AppRun AdaptixClient.AppDir/usr/share/applications/AdaptixClient.desktop \
+-        -bundle-non-qt-libs \
+-        -no-translations && \
+-    rm -rf squashfs-root && \
++    if [ "$DEPLOY_TOOL" = "linuxdeployqt" ]; then \
++        /usr/local/bin/linuxdeployqt --appimage-extract && \
++        ./squashfs-root/AppRun AdaptixClient.AppDir/usr/share/applications/AdaptixClient.desktop \
++            -bundle-non-qt-libs \
++            -no-translations && \
++        rm -rf squashfs-root; \
++    else \
++        QMAKE="/opt/qt/${QT_VERSION}/${QT_DIR_NAME}/bin/qmake" \
++            /usr/local/bin/linuxdeploy --appdir AdaptixClient.AppDir --plugin qt; \
++    fi && \
+     /usr/local/bin/appimagetool --appimage-extract && \
+-    ARCH=x86_64 ./squashfs-root/AppRun AdaptixClient.AppDir AdaptixClient-x86_64.AppImage && \
++    ARCH="${IMG_ARCH}" ./squashfs-root/AppRun AdaptixClient.AppDir "AdaptixClient-${IMG_ARCH}.AppImage" && \
+     rm -rf squashfs-root
+
+
