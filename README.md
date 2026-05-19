@@ -29,7 +29,7 @@ Plus separate workflows for the GUI clients:
 
 - **Linux AppImage** (x86_64) built inside a Docker container — reuses the upstream `build-client` Dockerfile stage, no duplication.
 - **macOS .app bundle** (Apple Silicon / arm64) built natively via Homebrew Qt, with portable RPATHs and ad-hoc signing — Adaptix does not ship an official macOS build.
-- **Windows exe** (x86_64) built natively on a Windows machine using MSYS2 + MinGW64; `install-prereqs-windows.ps1` automates the prerequisite setup.
+- **Windows exe** (x86_64) built natively on a Windows machine using MSYS2 + MinGW64; `scripts/install-prereqs-windows.ps1` automates the prerequisite setup.
 
 ---
 
@@ -86,9 +86,9 @@ The rendered profile lives at `./data/profile.yaml` and is reused on subsequent 
 **Linux AppImage (amd64 or arm64):**
 
 ```bash
-./build-client-linux.sh                  # host arch (amd64 or arm64)
-./build-client-linux.sh --arch amd64     # force x86_64 (Qt 6.9.2 via ubuntu:22.04 + aqtinstall)
-./build-client-linux.sh --arch arm64     # force aarch64 (Qt 6.10.2 via kali-rolling + distro packages)
+./scripts/build-client-linux.sh                  # host arch (amd64 or arm64)
+./scripts/build-client-linux.sh --arch amd64     # force x86_64 (Qt 6.9.2 via ubuntu:22.04 + aqtinstall)
+./scripts/build-client-linux.sh --arch arm64     # force aarch64 (Qt 6.10.2 via kali-rolling + distro packages)
 # → AdaptixClient-dist/AdaptixClient-{x86_64,aarch64}.AppImage
 ```
 
@@ -100,9 +100,9 @@ amd64 builds use the upstream `build-client` Dockerfile stage as-is. arm64 build
 # Prerequisites: Homebrew with cmake, qt@6, openssl@3
 brew install cmake qt@6 openssl@3
 
-./build-client-macos.sh           # plain build
-./build-client-macos.sh --clean   # wipe build dir first
-./build-client-macos.sh --dmg     # also produce a .dmg
+./scripts/build-client-macos.sh           # plain build
+./scripts/build-client-macos.sh --clean   # wipe build dir first
+./scripts/build-client-macos.sh --dmg     # also produce a .dmg
 # → AdaptixClient-dist/AdaptixClient.app  (~118 MB, arm64-only)
 ```
 
@@ -112,7 +112,7 @@ The script applies the macOS-bundle patch on entry, builds, fixes RPATHs for por
 
 ```powershell
 # Step 1 — install prerequisites (once per machine, from an Administrator PowerShell):
-powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1
 # Installs MSYS2 + Git via winget, then all MinGW64 packages (~2 GB, 5-15 min).
 
 # Step 2 — build (from a standard cmd.exe prompt, not PowerShell):
@@ -141,10 +141,13 @@ AdaptixC2-Omni/
 ├── Dockerfile            ← unified server build (multi-stage, host-arch by default)
 ├── docker-compose.yml    ← profiles: build / runtime / build-client
 ├── profile.kharon.yaml   ← merged server profile, 9 extenders + 2 axscripts
-├── build-client-macos.sh ← native macOS .app build (Apple Silicon arm64)
-├── install-prereqs-windows.ps1 ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6)
+├── scripts/              ← host-side build helpers
+│   ├── build-client-linux.sh        ← Linux AppImage build (amd64 + arm64 via Docker)
+│   ├── build-client-macos.sh        ← native macOS .app build (Apple Silicon arm64)
+│   └── install-prereqs-windows.ps1  ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6)
 ├── patches/              ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch
+│   ├── adaptixclient-kali-arm64-stage.patch
 │   └── extension-kit-nanodump-host-strip.patch
 ├── .dockerignore         ← excludes submodule .git pointer files from build context
 │
@@ -169,11 +172,11 @@ Every customization is either a workspace-root file we authored or a tracked pat
 | Unified server Dockerfile | `Dockerfile` | Single image with server + 9 extenders + BOFs + axscripts; one build, one artifact. |
 | Compose orchestration | `docker-compose.yml` | Three profiles (`build`, `runtime`, `build-client`) covering the full lifecycle. |
 | Kharon + AxScripts wired into server profile | `profile.kharon.yaml` | Adds the two Kharon extenders and the two AxScript module sets to the upstream default profile. |
-| macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `build-client-macos.sh` applies and reverts it around each build. |
+| macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `scripts/build-client-macos.sh` applies and reverts it around each build. |
 | nanodump host-strip fix | `patches/extension-kit-nanodump-host-strip.patch` | Upstream nanodump strips its host-built `restore_signature` ELF with the Windows cross-strip, which breaks on arm64 hosts. The patch deletes the redundant strip line; `gcc -s` on the prior line already strips it. Applied inside the build container by the Dockerfile. |
-| arm64 client build via kali-rolling | `patches/adaptixclient-kali-arm64-stage.patch` | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x, so the upstream `build-client` Dockerfile stage can't target arm64. The patch appends a new `build-client-kali` stage that uses kali-rolling's distro Qt 6.10.2 + `linuxdeploy` instead. Purely additive — the original `build-client` stage is unchanged, so amd64 builds are byte-equivalent to upstream. Applied on the host by `build-client-linux.sh` with auto-revert. |
-| macOS native build script | `build-client-macos.sh` | macdeployqt + RPATH cleanup + ad-hoc signing — required to produce a portable Apple Silicon `.app` that launches outside the build host. |
-| Windows prerequisite installer | `install-prereqs-windows.ps1` | Automates the one-time setup of MSYS2, MinGW64 toolchain, Qt6, OpenSSL, CMake, and Ninja needed by `build.bat` on a Windows machine. |
+| arm64 client build via kali-rolling | `patches/adaptixclient-kali-arm64-stage.patch` | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x, so the upstream `build-client` Dockerfile stage can't target arm64. The patch appends a new `build-client-kali` stage that uses kali-rolling's distro Qt 6.10.2 + `linuxdeploy` instead. Purely additive — the original `build-client` stage is unchanged, so amd64 builds are byte-equivalent to upstream. Applied on the host by `scripts/build-client-linux.sh` with auto-revert. |
+| macOS native build script | `scripts/build-client-macos.sh` | macdeployqt + RPATH cleanup + ad-hoc signing — required to produce a portable Apple Silicon `.app` that launches outside the build host. |
+| Windows prerequisite installer | `scripts/install-prereqs-windows.ps1` | Automates the one-time setup of MSYS2, MinGW64 toolchain, Qt6, OpenSSL, CMake, and Ninja needed by `build.bat` on a Windows machine. |
 | Kharon graft inside the build | (Dockerfile-only, no source-tree change) | The Dockerfile copies `Kharon/agent_kharon` and `Kharon/listener_kharon_http` into `AdaptixServer/extenders/` and runs `go work use` *inside* the container, mirroring what `Kharon/setup_kharon.sh` does — but only inside the build, never on the host tree. |
 | Build-context hygiene | `.dockerignore` | Excludes `**/.git` so submodule `.git` pointer files (which reference paths outside the build context) don't break in-container `git apply`. |
 
@@ -259,6 +262,6 @@ If you find a bug in the framework, an agent, or a BOF, please file it upstream 
 
 ## License
 
-The build harness in this repository (`Dockerfile`, `docker-compose.yml`, `profile.kharon.yaml`, `build-client-macos.sh`, `install-prereqs-windows.ps1`, `patches/`, `docker/`, `.github/`, `BLUEPRINT.md`, `CLAUDE.md`, `README.md`) is released under the [MIT License](./LICENSE).
+The build harness in this repository (`Dockerfile`, `docker-compose.yml`, `profile.kharon.yaml`, `scripts/`, `patches/`, `docker/`, `.github/`, `BLUEPRINT.md`, `CLAUDE.md`, `README.md`) is released under the [MIT License](./LICENSE).
 
 Submodule contents are governed by their own upstream licenses; consult each submodule's `LICENSE` file before redistribution. In particular, AdaptixC2 carries explicit notices about authorized use that you must preserve.

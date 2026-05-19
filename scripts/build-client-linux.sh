@@ -3,11 +3,11 @@
 # build-client (amd64) or build-client-kali (arm64) stage.
 # Output: ./AdaptixClient-dist/AdaptixClient-{x86_64,aarch64}.AppImage
 #
-# Usage:
-#   ./build-client-linux.sh                  # build for host arch
-#   ./build-client-linux.sh --arch amd64     # force x86_64 AppImage
-#   ./build-client-linux.sh --arch arm64     # force aarch64 AppImage
-#   ./build-client-linux.sh --clean          # wipe dist dir first
+# Usage (callable from any cwd; resolves paths via $REPO_ROOT):
+#   ./scripts/build-client-linux.sh                  # build for host arch
+#   ./scripts/build-client-linux.sh --arch amd64     # force x86_64 AppImage
+#   ./scripts/build-client-linux.sh --arch arm64     # force aarch64 AppImage
+#   ./scripts/build-client-linux.sh --clean          # wipe dist dir first
 #
 # Requires: Docker with Compose v2.
 #
@@ -25,11 +25,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DIST_DIR="${SCRIPT_DIR}/AdaptixClient-dist"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DIST_DIR="${REPO_ROOT}/AdaptixClient-dist"
 COMPOSE_PROFILE="build-client"
 COMPOSE_SVC="client-linux"
-PATCH="${SCRIPT_DIR}/patches/adaptixclient-kali-arm64-stage.patch"
-ADAPTIX_REPO="${SCRIPT_DIR}/AdaptixC2"
+PATCH="${REPO_ROOT}/patches/adaptixclient-kali-arm64-stage.patch"
+ADAPTIX_REPO="${REPO_ROOT}/AdaptixC2"
 
 DO_CLEAN=0
 ARCH=host
@@ -140,6 +141,7 @@ export ADAPTIX_CLIENT_TARGET="$BUILD_TARGET"
 export ADAPTIX_CLIENT_IMG_ARCH="$IMG_ARCH"
 
 echo "[*] Building Linux client (arch=$ARCH, platform=$DOCKER_PLATFORM, target=$BUILD_TARGET)"
+cd "$REPO_ROOT"
 docker compose --profile "$COMPOSE_PROFILE" up --build --abort-on-container-exit "$COMPOSE_SVC"
 
 # ---- verify + tidy -----------------------------------------------------------

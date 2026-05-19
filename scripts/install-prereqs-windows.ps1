@@ -22,16 +22,17 @@
     Skip installing Git for Windows.  Use if git is already on your PATH.
 
 .EXAMPLE
-    # Standard install — from an elevated (Administrator) PowerShell prompt:
-    powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+    # Standard install — from an elevated (Administrator) PowerShell prompt
+    # at the repo root:
+    powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1
 
 .EXAMPLE
     # Non-default MSYS2 path (also edit CMakeLists.txt line 10 to match):
-    powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1 -Msys2Root D:\msys64
+    powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1 -Msys2Root D:\msys64
 
 .EXAMPLE
     # Skip Git if already installed:
-    powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1 -SkipGit
+    powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1 -SkipGit
 
 .NOTES
     See BLUEPRINT.md §11 for the full Windows build guide, DLL reference table,
@@ -203,7 +204,8 @@ foreach ($c in $checks) {
 
 Write-Step "Qt6_DIR / CMakeLists.txt alignment"
 
-$cmakeLists = Join-Path $PSScriptRoot "AdaptixC2\AdaptixClient\CMakeLists.txt"
+$RepoRoot   = Split-Path -Parent $PSScriptRoot
+$cmakeLists = Join-Path $RepoRoot "AdaptixC2\AdaptixClient\CMakeLists.txt"
 if (Test-Path $cmakeLists) {
     $hit = Select-String -Path $cmakeLists -Pattern 'Qt6_DIR' | Select-Object -First 1
     if ($hit) {

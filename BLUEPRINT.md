@@ -26,16 +26,20 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 ├── Dockerfile            ← unified server build (multi-stage, host-arch by default)
 ├── docker-compose.yml    ← services for build/runtime/build-client
 ├── profile.kharon.yaml   ← merged server profile template (9 extenders + 2 axscripts, env-var placeholders)
-├── build-client-macos.sh ← native macOS .app build script (Apple Silicon arm64)
-├── install-prereqs-windows.ps1 ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6; see §11)
 ├── LICENSE               ← MIT license (build harness only; submodule contents under their own licenses)
+│
+├── scripts/                                       ← host-side build helpers (callable from repo root)
+│   ├── build-client-linux.sh                      ← Linux AppImage build (amd64 + arm64) via Docker; §5.2 + §6.4
+│   ├── build-client-macos.sh                      ← native macOS .app build (Apple Silicon arm64); §5.4
+│   └── install-prereqs-windows.ps1                ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6); §11
 │
 ├── docker/
 │   └── entrypoint.sh     ← runtime image entrypoint: TLS cert-gen + profile rendering on first start (§5.7)
 │
 ├── patches/                                       ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch           ← see §5.5 / §6.1
-│   └── extension-kit-nanodump-host-strip.patch   ← see §5.5 / §6.3
+│   ├── adaptixclient-kali-arm64-stage.patch       ← see §5.5 / §6.4
+│   └── extension-kit-nanodump-host-strip.patch    ← see §5.5 / §6.3
 │
 ├── .github/
 │   └── workflows/
@@ -45,7 +49,7 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 └── AdaptixClient-dist/   ← created during builds; AppImage and .app land here (gitignored)
 ```
 
-Host: macOS Apple Silicon (arm64). The server image builds for the **host architecture by default** — native arm64 builds on Apple Silicon (≈6 min), or set `DOCKER_DEFAULT_PLATFORM=linux/amd64` to force amd64 under QEMU emulation (≈13 min). Verified to build and run on both arches. The Linux client AppImage builds for either arch via `build-client-linux.sh --arch amd64|arm64` (host default): amd64 takes the upstream `build-client` stage; arm64 takes the new `build-client-kali` stage (§6.4) — kali-rolling provides distro Qt 6.10.2 since aqtinstall has no aarch64 Qt binaries. macOS client targets **arm64 only**.
+Host: macOS Apple Silicon (arm64). The server image builds for the **host architecture by default** — native arm64 builds on Apple Silicon (≈6 min), or set `DOCKER_DEFAULT_PLATFORM=linux/amd64` to force amd64 under QEMU emulation (≈13 min). Verified to build and run on both arches. The Linux client AppImage builds for either arch via `scripts/build-client-linux.sh --arch amd64|arm64` (host default): amd64 takes the upstream `build-client` stage; arm64 takes the new `build-client-kali` stage (§6.4) — kali-rolling provides distro Qt 6.10.2 since aqtinstall has no aarch64 Qt binaries. macOS client targets **arm64 only**.
 
 ## 2. Upstream baselines this was applied against
 
@@ -85,7 +89,7 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 7. **TLS cipher policy:** ECDHE-only suites in `profile.kharon.yaml`. The legacy `TLS_RSA_WITH_AES_*_GCM_*` suites (no forward secrecy) that upstream ships were dropped to enforce PFS.
 8. **Upstream version pinning at build time:** `golang:1.25.4-bookworm` (specific patch, not the floating `1.25`) and `go-win7` pinned via `ARG GO_WIN7_SHA` (currently `15ad42b…`). Bumping is a one-line ARG edit; reproducibility is a first-class requirement.
 
-## 5. Files added at workspace root
+## 5. Files added by this workspace
 
 ### 5.1 `/Dockerfile` (server image)
 
@@ -169,7 +173,7 @@ services:
     command: sh -c "cp -r /client-dist/. /client-dist-output/"
 ```
 
-`client-linux` targets one of two stages depending on the `ADAPTIX_CLIENT_TARGET` env var (set by `build-client-linux.sh` based on `--arch`):
+`client-linux` targets one of two stages depending on the `ADAPTIX_CLIENT_TARGET` env var (set by `scripts/build-client-linux.sh` based on `--arch`):
 
 - **amd64** → upstream `build-client` (lines ≈21–121 of `AdaptixC2/Dockerfile`): Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool. Unchanged from upstream; we inherit any changes.
 - **arm64** → new `build-client-kali` stage added by `patches/adaptixclient-kali-arm64-stage.patch`: kalilinux/kali-rolling + distro Qt 6.10.2, linuxdeploy + linuxdeploy-plugin-qt + appimagetool. The arm64 path exists because aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x; Kali's distro Qt6 fills the gap. Qt 6.10.2 is API-compatible with 6.9.2 (AdaptixClient pins no minor minimum).
@@ -231,9 +235,9 @@ Five categories of change:
 
 These paths resolve relative to `/app/` (server's CWD inside the container), which is exactly where `/app/Extension-Kit/` and `/app/PostEx-Arsenal/` are placed by the runtime stage. AxScript's `ax.script_dir()` resolves to the directory of the loaded `.axs` file — so `kh_modules.axs` finds `bofs/dist/*.x64.o` at `/app/PostEx-Arsenal/bofs/dist/*.x64.o`, and `extension-kit.axs` finds the per-subdir scripts.
 
-### 5.4 `build-client-macos.sh`
+### 5.4 `scripts/build-client-macos.sh`
 
-Native macOS arm64 build. 185 lines; full file at workspace root. Key steps:
+Native macOS arm64 build. ~185 lines; full file at `scripts/build-client-macos.sh`. Resolves a `REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"` and rebases every absolute path off it, so the script is invocable from any cwd (`./scripts/build-client-macos.sh` from the repo root is the documented form). Key steps:
 
 1. **Preflight:** require `Darwin arm64`; require `brew`; verify `cmake`, `qt@6`, `openssl@3` Homebrew kegs.
 2. **Icon:** `sips` + `iconutil` convert `AdaptixC2/AdaptixClient/Resources/Logo.png` → `AdaptixClient.icns`. Idempotent (skip if newer than source).
@@ -254,8 +258,8 @@ Build-time patches against submodule trees we don't own. Each is a unified-diff 
 
 | Patch | Target | Applied by |
 |---|---|---|
-| `adaptixclient-macos-bundle.patch` | `AdaptixC2/AdaptixClient/CMakeLists.txt` | `build-client-macos.sh` (host, with auto-revert) |
-| `adaptixclient-kali-arm64-stage.patch` | `AdaptixC2/Dockerfile` | `build-client-linux.sh` (host, with auto-revert) |
+| `adaptixclient-macos-bundle.patch` | `AdaptixC2/AdaptixClient/CMakeLists.txt` | `scripts/build-client-macos.sh` (host, with auto-revert) |
+| `adaptixclient-kali-arm64-stage.patch` | `AdaptixC2/Dockerfile` | `scripts/build-client-linux.sh` (host, with auto-revert) |
 | `extension-kit-nanodump-host-strip.patch` | `Extension-Kit/Creds-BOF/nanodump/Makefile` | `Dockerfile` `build-bofs` stage (container only) |
 
 When upstream drifts and a patch stops applying, the apply script (or `docker compose build`) fails fast with a clear message. Regenerate the patch from a freshly-rebased manual edit, then commit the new `.patch` file. Don't accumulate patches: if a workaround can be replaced by an upstream change, push for that instead.
@@ -288,7 +292,7 @@ Why this lives in a separate file (vs. heredoc in the Dockerfile): the script gr
 
 ### 6.1 `AdaptixC2/AdaptixClient/CMakeLists.txt` — macOS bundle support
 
-**Stored as `patches/adaptixclient-macos-bundle.patch`; applied by `build-client-macos.sh` and auto-reverted on exit.** The block inserts after `add_executable(AdaptixClient …)` (which ended at line 260 in the pinned commit) and before `target_compile_definitions(...)` (line 262). Result:
+**Stored as `patches/adaptixclient-macos-bundle.patch`; applied by `scripts/build-client-macos.sh` and auto-reverted on exit.** The block inserts after `add_executable(AdaptixClient …)` (which ended at line 260 in the pinned commit) and before `target_compile_definitions(...)` (line 262). Result:
 
 ```cmake
         Source/Utils/FontManager.cpp
@@ -329,7 +333,7 @@ These changes are made **inside the Dockerfile** and do not touch the host sourc
 - `AdaptixC2/AdaptixServer/go.work` — `go work use` appends two entries during the build. (`setup_kharon.sh` is the upstream-provided script doing this; we inline the same logic.)
 - `AdaptixC2/AdaptixServer/profile.yaml` — replaced inside the runtime image by the workspace-root `profile.kharon.yaml`, COPYed in as `/app/profile.yaml.tmpl` (a template — see §5.3 and §5.7). The entrypoint renders it to `/app/data/profile.yaml` on first start, substituting in credentials from env vars or random defaults. The host file is no longer bind-mounted at runtime.
 
-These should NOT be committed to a submodule working tree — keep them clean so `git status` in any submodule stays empty between builds. The `patches/` mechanism (§5.5), the `trap`-based revert in `build-client-macos.sh`, and the in-container `git apply` for §6.3 enforce this; everything else is Dockerfile-side.
+These should NOT be committed to a submodule working tree — keep them clean so `git status` in any submodule stays empty between builds. The `patches/` mechanism (§5.5), the `trap`-based revert in `scripts/build-client-macos.sh`, and the in-container `git apply` for §6.3 enforce this; everything else is Dockerfile-side.
 
 ### 6.3 `Extension-Kit/Creds-BOF/nanodump/Makefile` — host-arch strip fix
 
@@ -346,7 +350,7 @@ Worth pushing upstream as a one-line PR; until then, this patch keeps cross-arch
 
 ### 6.4 `AdaptixC2/Dockerfile` — Kali-rolling arm64 client stage
 
-**Stored as `patches/adaptixclient-kali-arm64-stage.patch`; applied by `build-client-linux.sh` on the host with auto-revert via `trap`, so the submodule tree stays clean between builds.** The patch appends a new `build-client-kali` stage to `AdaptixC2/Dockerfile` — purely additive, the upstream `build-client` stage is unchanged.
+**Stored as `patches/adaptixclient-kali-arm64-stage.patch`; applied by `scripts/build-client-linux.sh` on the host with auto-revert via `trap`, so the submodule tree stays clean between builds.** The patch appends a new `build-client-kali` stage to `AdaptixC2/Dockerfile` — purely additive, the upstream `build-client` stage is unchanged.
 
 Why a second stage instead of parameterizing the first: upstream's `build-client` installs Qt via aqtinstall (`aqt install-qt linux desktop 6.9.2 linux_gcc_64`). aqtinstall publishes no Linux aarch64 Qt binaries for any version through 6.11.x (verified via `aqt list-qt linux desktop --arch 6.9.2` — returns only `linux_gcc_64`). The new stage takes a different approach: base on `kalilinux/kali-rolling`, install Qt 6 via apt (currently Qt 6.10.2; API-compatible with 6.9.2 since AdaptixClient pins no minor minimum), and use `linuxdeploy` + `linuxdeploy-plugin-qt` instead of linuxdeployqt (the latter is amd64-only and unmaintained).
 
@@ -394,14 +398,19 @@ docker compose --profile runtime down
 docker compose --profile build-client build
 docker compose --profile build-client up --abort-on-container-exit
 
+# Linux client AppImage via the helper script (preferred — handles host vs. amd64 vs. arm64 and the kali-arm64 patch):
+./scripts/build-client-linux.sh                  # host arch
+./scripts/build-client-linux.sh --arch amd64     # force x86_64 (Qt 6.9.2 via aqtinstall)
+./scripts/build-client-linux.sh --arch arm64     # force aarch64 (Qt 6.10.2 via kali-rolling)
+
 # macOS client .app  (≈3–6 min native; 118 MB at AdaptixClient-dist/AdaptixClient.app)
-./build-client-macos.sh           # plain
-./build-client-macos.sh --clean   # wipe build dir first
-./build-client-macos.sh --dmg     # also produce .dmg
+./scripts/build-client-macos.sh           # plain
+./scripts/build-client-macos.sh --clean   # wipe build dir first
+./scripts/build-client-macos.sh --dmg     # also produce .dmg
 
 # Windows client exe  (on a Windows machine; see §11 for full details)
-# Step 1 — install prerequisites once per machine (elevated PowerShell):
-#   powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+# Step 1 — install prerequisites once per machine (elevated PowerShell at the repo root):
+#   powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1
 # Step 2 — build (standard cmd.exe):
 #   cd AdaptixC2\AdaptixClient && build.bat
 #   → AdaptixC2\AdaptixClient\dist\AdaptixClient.exe + bundled DLLs
@@ -437,7 +446,7 @@ docker compose --profile build-client up --abort-on-container-exit
 
 ## 9. Known issues and gotchas
 
-1. **macOS — macdeployqt does NOT fix the main exe's rpath.** Out of the box it leaves `/opt/homebrew/opt/qt/lib` on the binary, which means `@rpath/libsharpyuv.0.dylib` (and similar transitive libwebp deps) fail to resolve outside the build host → the app crashes at launch with no console output. The fix is in step 6 of `build-client-macos.sh` and is **mandatory** for portability.
+1. **macOS — macdeployqt does NOT fix the main exe's rpath.** Out of the box it leaves `/opt/homebrew/opt/qt/lib` on the binary, which means `@rpath/libsharpyuv.0.dylib` (and similar transitive libwebp deps) fail to resolve outside the build host → the app crashes at launch with no console output. The fix is in step 6 of `scripts/build-client-macos.sh` and is **mandatory** for portability.
 2. **macOS — codesign verification errors from macdeployqt are noise** but the ad-hoc resign step at the end of the script makes the final bundle launch on a clean Mac.
 3. **macOS — first-launch Gatekeeper warning** is expected because the bundle is ad-hoc signed (no Developer ID). For unattended distribution, codesign with a Developer ID + notarize. Out of scope here.
 4. **Linux AppImage — `libfuse2` and `fuse` apt packages** are required inside the build container; already present in `AdaptixC2/Dockerfile`'s build-client stage. Docker Desktop does NOT need fuse access on the *host* to build (only to run AppImages on a Linux host).
@@ -505,13 +514,13 @@ The upstream Windows build path targets **GCC via MSYS2's MinGW64 environment** 
 
 #### Automated install (recommended)
 
-A PowerShell script at the workspace root handles everything below in one command. Run from an elevated (Administrator) PowerShell prompt:
+A PowerShell script under `scripts/` handles everything below in one command. Run from an elevated (Administrator) PowerShell prompt at the repo root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install-prereqs-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1
 ```
 
-The script installs MSYS2 and Git for Windows via winget, runs the two-pass pacman update, installs all required MinGW64 packages, verifies the binaries, and checks that `Qt6_DIR` in `CMakeLists.txt` matches the MSYS2 path. See the script's inline help (`Get-Help .\install-prereqs-windows.ps1`) for parameters (`-Msys2Root`, `-SkipGit`).
+The script installs MSYS2 and Git for Windows via winget, runs the two-pass pacman update, installs all required MinGW64 packages, verifies the binaries, and checks that `Qt6_DIR` in `CMakeLists.txt` matches the MSYS2 path. See the script's inline help (`Get-Help .\scripts\install-prereqs-windows.ps1`) for parameters (`-Msys2Root`, `-SkipGit`).
 
 #### Manual install
 

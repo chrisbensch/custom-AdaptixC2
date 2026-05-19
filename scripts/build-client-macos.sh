@@ -2,19 +2,20 @@
 # Native macOS build of the AdaptixC2 Qt6 client into a portable .app bundle
 # (Apple Silicon / arm64). Output: ./AdaptixClient-dist/AdaptixClient.app
 #
-# Usage:
-#   ./build-client-macos.sh             # build
-#   ./build-client-macos.sh --clean     # wipe build dir first
-#   ./build-client-macos.sh --dmg       # also produce a .dmg
+# Usage (callable from any cwd; resolves paths via $REPO_ROOT):
+#   ./scripts/build-client-macos.sh             # build
+#   ./scripts/build-client-macos.sh --clean     # wipe build dir first
+#   ./scripts/build-client-macos.sh --dmg       # also produce a .dmg
 #
 # Requires: Homebrew with cmake, qt@6, openssl@3 installed.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${SCRIPT_DIR}/AdaptixC2/AdaptixClient"
-BUILD_DIR="${SCRIPT_DIR}/build/macos"
-DIST_DIR="${SCRIPT_DIR}/AdaptixClient-dist"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SRC_DIR="${REPO_ROOT}/AdaptixC2/AdaptixClient"
+BUILD_DIR="${REPO_ROOT}/build/macos"
+DIST_DIR="${REPO_ROOT}/AdaptixClient-dist"
 RES_DIR="${SRC_DIR}/Resources"
 ICNS="${RES_DIR}/AdaptixClient.icns"
 LOGO_PNG="${RES_DIR}/Logo.png"
@@ -39,7 +40,7 @@ done
 OS_ARCH="$(uname -sm)"
 if [[ "$OS_ARCH" != "Darwin arm64" ]]; then
     echo "[!] This script targets Apple Silicon macOS only (got: $OS_ARCH)." >&2
-    echo "    For Linux, use: ./build-client-linux.sh" >&2
+    echo "    For Linux, use: ./scripts/build-client-linux.sh" >&2
     exit 1
 fi
 
@@ -73,8 +74,8 @@ fi
 # submodule working tree stays clean across upstream bumps. Apply on entry,
 # revert on exit (success or failure) via trap.
 
-PATCH="${SCRIPT_DIR}/patches/adaptixclient-macos-bundle.patch"
-ADAPTIX_REPO="${SCRIPT_DIR}/AdaptixC2"
+PATCH="${REPO_ROOT}/patches/adaptixclient-macos-bundle.patch"
+ADAPTIX_REPO="${REPO_ROOT}/AdaptixC2"
 
 if [[ -f "$PATCH" ]]; then
     if git -C "$ADAPTIX_REPO" apply --check "$PATCH" 2>/dev/null; then
