@@ -45,7 +45,7 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 └── AdaptixClient-dist/   ← created during builds; AppImage and .app land here (gitignored)
 ```
 
-Host: macOS Apple Silicon (arm64). The server image builds for the **host architecture by default** — native arm64 builds on Apple Silicon (≈6 min), or set `DOCKER_DEFAULT_PLATFORM=linux/amd64` to force amd64 under QEMU emulation (≈13 min). Verified to build and run on both arches. The Linux client AppImage stays pinned to **linux/amd64** because it produces an x86_64 AppImage by definition. macOS client targets **arm64 only**.
+Host: macOS Apple Silicon (arm64). The server image builds for the **host architecture by default** — native arm64 builds on Apple Silicon (≈6 min), or set `DOCKER_DEFAULT_PLATFORM=linux/amd64` to force amd64 under QEMU emulation (≈13 min). Verified to build and run on both arches. The Linux client AppImage builds for either arch via `build-client-linux.sh --arch amd64|arm64` (host default): amd64 takes the upstream `build-client` stage; arm64 takes the new `build-client-kali` stage (§6.4) — kali-rolling provides distro Qt 6.10.2 since aqtinstall has no aarch64 Qt binaries. macOS client targets **arm64 only**.
 
 ## 2. Upstream baselines this was applied against
 
@@ -65,10 +65,12 @@ These are the exact commits the integration was designed for. When re-applying a
 | Go | **1.25.4** (server image base: `golang:1.25-bookworm`) | Matches `AdaptixC2/AdaptixServer/go.mod`. The Adaptix install guide mentions 1.25.8 — newer patch versions are fine, but staying on 1.25.x is required. |
 | GOEXPERIMENT | `jsonv2,greenteagc` | Required by upstream Makefile / Dockerfile; preserved in the new Dockerfile as an env default. |
 | go-win7 | HEAD of `Adaptix-Framework/go-win7` | Win7-compatible Go runtime needed by Gopher Agent and consumed by Kharon's beacon. Cloned `--depth=1`. |
-| Qt (Linux client AppImage) | **6.9.2** (via aqtinstall, from existing AdaptixC2/Dockerfile build-client stage) | Reused as-is from upstream. |
+| Qt (Linux client AppImage, amd64) | **6.9.2** (via aqtinstall, from upstream AdaptixC2/Dockerfile `build-client` stage) | Reused as-is from upstream. |
+| Qt (Linux client AppImage, arm64) | **6.10.2** (distro packages from `kalilinux/kali-rolling`, via new `build-client-kali` stage added by `patches/adaptixclient-kali-arm64-stage.patch`) | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x; Kali's distro Qt6 fills the gap. API-compatible with 6.9.2. |
 | Qt (macOS client) | Homebrew **qt@6** (currently 6.11.x) | Native arm64; works because of the `if(APPLE)` CMake patch. |
 | Debian base (build) | `bookworm` | Matches upstream. |
-| Ubuntu base (Linux client) | `22.04` | From AdaptixC2/Dockerfile build-client stage. |
+| Ubuntu base (Linux client amd64) | `22.04` | From upstream AdaptixC2/Dockerfile `build-client` stage. |
+| Kali base (Linux client arm64) | `kalilinux/kali-rolling:latest` | Provides arm64 Qt 6.10.2; tracked as a rolling distro since this is the only Qt-6.9+ aarch64 source we have. |
 
 ## 4. Decisions baked into the integration
 
@@ -79,7 +81,7 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 3. **PostEx-Arsenal `postex_sc/`:** trust the checked-in `.bin` files; do not rebuild in the container (saves clang/llvm/nasm runtime in postex_sc subdirs).
 4. **macOS bundle:** patch `AdaptixClient/CMakeLists.txt` with `MACOSX_BUNDLE` properties guarded by `if(APPLE)`. Build natively via Homebrew Qt, then `macdeployqt` + RPATH cleanup + ad-hoc resign.
 5. **macOS arch:** Apple Silicon **arm64 only** (no universal binary).
-6. **Linux AppImage delivery:** add a `client-linux` service to the workspace-root `docker-compose.yml` that points at `AdaptixC2/Dockerfile`'s existing `build-client` stage. No duplication.
+6. **Linux AppImage delivery:** add a `client-linux` service to the workspace-root `docker-compose.yml`. For amd64 it points at `AdaptixC2/Dockerfile`'s upstream `build-client` stage (Qt 6.9.2 via aqtinstall, ubuntu:22.04). For arm64 it points at a new `build-client-kali` stage added via `patches/adaptixclient-kali-arm64-stage.patch` (Qt 6.10.2 via distro packages on kali-rolling) — aqtinstall publishes no aarch64 Qt binaries. Target swap is driven by `ADAPTIX_CLIENT_TARGET`; defaults preserve the original amd64 path.
 7. **TLS cipher policy:** ECDHE-only suites in `profile.kharon.yaml`. The legacy `TLS_RSA_WITH_AES_*_GCM_*` suites (no forward secrecy) that upstream ships were dropped to enforce PFS.
 8. **Upstream version pinning at build time:** `golang:1.25.4-bookworm` (specific patch, not the floating `1.25`) and `go-win7` pinned via `ARG GO_WIN7_SHA` (currently `15ad42b…`). Bumping is a one-line ARG edit; reproducibility is a first-class requirement.
 
@@ -152,20 +154,27 @@ services:
 
   client-linux:                                # profile: build-client — Linux AppImage
     profiles: ["build-client"]
-    platform: linux/amd64
+    platform: ${ADAPTIX_CLIENT_PLATFORM:-linux/amd64}
     build:
       context: ./AdaptixC2
       dockerfile: Dockerfile
-      target: build-client
-      platforms: [linux/amd64]
-    image: adaptixc2-omni-client-linux-builder:latest
-    container_name: adaptixc2-omni-client-linux-builder
+      target: ${ADAPTIX_CLIENT_TARGET:-build-client}
+      platforms: [${ADAPTIX_CLIENT_PLATFORM:-linux/amd64}]
+      args:
+        IMG_ARCH: ${ADAPTIX_CLIENT_IMG_ARCH:-x86_64}
+    image: adaptixc2-omni-client-linux-builder:${ADAPTIX_CLIENT_ARCH:-amd64}
+    container_name: adaptixc2-omni-client-linux-builder-${ADAPTIX_CLIENT_ARCH:-amd64}
     volumes:
       - ./AdaptixClient-dist:/client-dist-output
     command: sh -c "cp -r /client-dist/. /client-dist-output/"
 ```
 
-`client-linux` deliberately reuses **`AdaptixC2/Dockerfile`**'s existing `build-client` stage (lines ≈21–121 in upstream): Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool. No duplication — if upstream changes the stage, we inherit it.
+`client-linux` targets one of two stages depending on the `ADAPTIX_CLIENT_TARGET` env var (set by `build-client-linux.sh` based on `--arch`):
+
+- **amd64** → upstream `build-client` (lines ≈21–121 of `AdaptixC2/Dockerfile`): Qt 6.9.2 via aqtinstall, ubuntu:22.04, linuxdeployqt + appimagetool. Unchanged from upstream; we inherit any changes.
+- **arm64** → new `build-client-kali` stage added by `patches/adaptixclient-kali-arm64-stage.patch`: kalilinux/kali-rolling + distro Qt 6.10.2, linuxdeploy + linuxdeploy-plugin-qt + appimagetool. The arm64 path exists because aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x; Kali's distro Qt6 fills the gap. Qt 6.10.2 is API-compatible with 6.9.2 (AdaptixClient pins no minor minimum).
+
+Defaults reproduce the original amd64 path (no env vars, no patch effect on the upstream stage), so existing workflows are unaffected.
 
 **Change from earlier revisions:** the `server` service no longer bind-mounts `./profile.kharon.yaml:/app/profile.yaml:ro`. The host file is now the **template** baked into the image at build time; the **rendered** profile lives under `./data/profile.yaml` (managed by the entrypoint, §5.7). Editing the workspace `profile.kharon.yaml` after first start has no effect on a running container — edit `./data/profile.yaml` and `docker compose --profile runtime restart`, or `rm ./data/profile.yaml` and re-launch with `ADAPTIX_*` env vars to re-render from the template.
 
@@ -246,6 +255,7 @@ Build-time patches against submodule trees we don't own. Each is a unified-diff 
 | Patch | Target | Applied by |
 |---|---|---|
 | `adaptixclient-macos-bundle.patch` | `AdaptixC2/AdaptixClient/CMakeLists.txt` | `build-client-macos.sh` (host, with auto-revert) |
+| `adaptixclient-kali-arm64-stage.patch` | `AdaptixC2/Dockerfile` | `build-client-linux.sh` (host, with auto-revert) |
 | `extension-kit-nanodump-host-strip.patch` | `Extension-Kit/Creds-BOF/nanodump/Makefile` | `Dockerfile` `build-bofs` stage (container only) |
 
 When upstream drifts and a patch stops applying, the apply script (or `docker compose build`) fails fast with a clear message. Regenerate the patch from a freshly-rebased manual edit, then commit the new `.patch` file. Don't accumulate patches: if a workaround can be replaced by an upstream change, push for that instead.
@@ -333,6 +343,28 @@ These should NOT be committed to a submodule working tree — keep them clean so
 `scripts/restore_signature` is built by the **host** `gcc` (line 78), but upstream then strips it with `x86_64-w64-mingw32-strip` — a Windows cross-strip targeted at PE/COFF. On amd64 hosts the cross-strip happens to accept x86_64 ELF as a side effect of binutils' BFD library, so the bug is invisible. On arm64 hosts gcc produces aarch64 ELF, which the x86_64-targeted strip rejects with `Unable to recognise the format of the input file`, and the BOF build fails. The strip is also redundant: line 78's `-s` flag already strips at link time. Dropping line 79 fixes arm64 and is a no-op on amd64.
 
 Worth pushing upstream as a one-line PR; until then, this patch keeps cross-arch builds working.
+
+### 6.4 `AdaptixC2/Dockerfile` — Kali-rolling arm64 client stage
+
+**Stored as `patches/adaptixclient-kali-arm64-stage.patch`; applied by `build-client-linux.sh` on the host with auto-revert via `trap`, so the submodule tree stays clean between builds.** The patch appends a new `build-client-kali` stage to `AdaptixC2/Dockerfile` — purely additive, the upstream `build-client` stage is unchanged.
+
+Why a second stage instead of parameterizing the first: upstream's `build-client` installs Qt via aqtinstall (`aqt install-qt linux desktop 6.9.2 linux_gcc_64`). aqtinstall publishes no Linux aarch64 Qt binaries for any version through 6.11.x (verified via `aqt list-qt linux desktop --arch 6.9.2` — returns only `linux_gcc_64`). The new stage takes a different approach: base on `kalilinux/kali-rolling`, install Qt 6 via apt (currently Qt 6.10.2; API-compatible with 6.9.2 since AdaptixClient pins no minor minimum), and use `linuxdeploy` + `linuxdeploy-plugin-qt` instead of linuxdeployqt (the latter is amd64-only and unmaintained).
+
+Package set (see the patch for the full list). Five gotchas discovered iteratively that aren't obvious from the apt names:
+
+1. **`ca-certificates` is explicit.** With `--no-install-recommends`, wget alone doesn't pull in CA certs, and downloading the linuxdeploy/appimagetool AppImages over HTTPS fails with `wget` exit code 5 (SSL verification failure). The package list installs `ca-certificates` explicitly.
+2. **`qt6-svg-dev` is required** (not just `libqt6svg6`). The bundled `qlementine` vendor library calls `find_package(Qt6 REQUIRED COMPONENTS Core Widgets Svg)`, which needs the CMake config files in `qt6-svg-dev`.
+3. **`qt6-declarative-dev` is required** for `Qt6::Qml` (top-level CMakeLists.txt component).
+4. **`qt6-base-private-dev` is required** because the bundled `kddockwidgets` vendor library uses `Qt6::WidgetsPrivate`. Without it, configure fails with `Imported target "Qt6::WidgetsPrivate" includes non-existent path "/usr/include/aarch64-linux-gnu/qt6/QtWidgets/6.10.2"`.
+5. **`qt6-svg-plugins` is required** for the runtime SVG icon engine plugin (`libqsvgicon.so`). Without it, `linuxdeploy-plugin-qt` fails with `ERROR: Cannot deploy non-existing library file: .../iconengines/libqsvgicon.so`. The `-dev` package alone provides the CMake config but not the runtime plugin .so.
+
+Additional fine points:
+
+- **AppImages get pre-extracted at install time.** Each of `linuxdeploy`, `linuxdeploy-plugin-qt`, and `appimagetool` is downloaded as an AppImage, then `--appimage-extract`-ed into `/opt/<tool>/`, with `/opt/<tool>/AppRun` symlinked into `/usr/local/bin/<tool>`. This avoids needing FUSE at build time (Kali ships no `libfuse2` — only `libfuse3-dev`) and avoids the AppImage runtime's per-invocation extract overhead.
+- **`IMG_ARCH` defaults to `aarch64`** — the stage's primary purpose. Override to `x86_64` to produce a distro-Qt amd64 AppImage as an alternative to the aqtinstall path (untested but plumbing supports it).
+- **Deprecation warnings during compile** about `QSortFilterProxyModel::invalidateFilter()` (deprecated in Qt 6.10 — use `begin/endFilterChange()` instead). Non-fatal; upstream-fix territory.
+
+Kali rolling is, by definition, a rolling distro. We accept that the Qt version baked into the arm64 AppImage will drift over time; if a future Qt minor breaks the Adaptix client, pin a snapshot tag in the `FROM` line. Build time on Apple Silicon: ≈4 minutes (≈90s apt install + ≈130s compile + ≈30s deploy + ≈10s appimage packaging). Output AppImage: ≈63 MB.
 
 ## 7. Build commands
 

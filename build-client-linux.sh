@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # Linux AppImage build of the AdaptixC2 Qt6 client, run inside the Docker
-# build-client stage. Output: ./AdaptixClient-dist/AdaptixClient-x86_64.AppImage
+# build-client (amd64) or build-client-kali (arm64) stage.
+# Output: ./AdaptixClient-dist/AdaptixClient-{x86_64,aarch64}.AppImage
 #
 # Usage:
-#   ./build-client-linux.sh                  # build for host arch (errors on arm64 host)
-#   ./build-client-linux.sh --arch amd64     # force x86_64 AppImage (QEMU on arm64 host)
+#   ./build-client-linux.sh                  # build for host arch
+#   ./build-client-linux.sh --arch amd64     # force x86_64 AppImage
+#   ./build-client-linux.sh --arch arm64     # force aarch64 AppImage
 #   ./build-client-linux.sh --clean          # wipe dist dir first
 #
 # Requires: Docker with Compose v2.
 #
-# arm64 is currently GATED in both directions: aqtinstall publishes no Linux
-# aarch64 Qt binaries for any Qt version through 6.11.x (verified via
-# `aqt list-qt linux desktop --arch 6.9.2`). On an arm64 host, zero-args
-# stops with instructions to opt into amd64-under-QEMU explicitly — we won't
-# silently switch arches on you. The patch + compose plumbing stays in place
-# so lifting the gate is a one-line change once upstream Qt ships arm64
-# binaries (or we wire distro-Qt / from-source Qt for the arm64 path).
+# Two build paths:
+#   amd64 → build-client stage (ubuntu:22.04 + aqtinstall Qt 6.9.2 +
+#           linuxdeployqt + appimagetool, all x86_64-only)
+#   arm64 → build-client-kali stage (kalilinux/kali-rolling + distro Qt 6.10.2 +
+#           linuxdeploy + linuxdeploy-plugin-qt, both arches supported)
 #
-# Applies patches/adaptixclient-multiarch-build.patch to AdaptixC2/Dockerfile
-# for the duration of the build (auto-reverts on exit) so the submodule tree
-# stays clean. When host != target the build runs under QEMU emulation.
+# The arm64 path exists because aqtinstall publishes no Linux aarch64 Qt
+# binaries for any version through 6.11.x; Kali's distro Qt6 fills the gap.
+# Applies patches/adaptixclient-kali-arm64-stage.patch to AdaptixC2/Dockerfile
+# for the duration of the build (auto-reverts on exit).
 
 set -euo pipefail
 
@@ -27,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${SCRIPT_DIR}/AdaptixClient-dist"
 COMPOSE_PROFILE="build-client"
 COMPOSE_SVC="client-linux"
-PATCH="${SCRIPT_DIR}/patches/adaptixclient-multiarch-build.patch"
+PATCH="${SCRIPT_DIR}/patches/adaptixclient-kali-arm64-stage.patch"
 ADAPTIX_REPO="${SCRIPT_DIR}/AdaptixC2"
 
 DO_CLEAN=0
@@ -39,7 +40,7 @@ while (( $# )); do
             [[ $# -ge 2 ]] || { echo "[!] --arch requires a value (host|amd64|arm64)" >&2; exit 2; }
             ARCH="$2"; shift 2 ;;
         --arch=*) ARCH="${1#*=}"; shift ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         *)
             echo "[!] Unknown flag: $1" >&2
             echo "    Use --arch <host|amd64|arm64>, --clean, or -h for help." >&2
@@ -49,47 +50,24 @@ done
 
 # ---- resolve target arch -----------------------------------------------------
 
-ARCH_REQUEST="$ARCH"
 if [[ "$ARCH" == "host" ]]; then
     case "$(uname -m)" in
         x86_64|amd64)  ARCH=amd64 ;;
         arm64|aarch64) ARCH=arm64 ;;
-        *) echo "[!] Unsupported host arch: $(uname -m). Pass --arch amd64." >&2; exit 1 ;;
+        *) echo "[!] Unsupported host arch: $(uname -m). Pass --arch amd64|arm64." >&2; exit 1 ;;
     esac
-fi
-
-# arm64 is gated: aqtinstall publishes no Linux aarch64 Qt binaries for any
-# version through 6.11.x. All build plumbing (patch, compose env vars, this
-# flag) stays wired so lifting the gate is local to this block. Both the
-# explicit (--arch arm64) and implicit (host=arm64) paths stop here — we
-# don't silently switch arches on the user, since amd64 on an arm64 host
-# means slow QEMU emulation that should be a conscious choice.
-if [[ "$ARCH" == "arm64" ]]; then
-    echo "[!] arm64 Linux AppImage build is currently unsupported." >&2
-    echo "    Qt 6.9.2 aarch64 Linux binaries aren't published via aqtinstall," >&2
-    echo "    which is the only Qt source the build-client stage knows about." >&2
-    echo "    Verify with: aqt list-qt linux desktop --arch 6.9.2  (returns linux_gcc_64 only)" >&2
-    if [[ "$ARCH_REQUEST" == "host" ]]; then
-        echo "    To build amd64 under QEMU emulation on this host, re-run with:" >&2
-        echo "        $0 --arch amd64" >&2
-    fi
-    exit 1
 fi
 
 case "$ARCH" in
     amd64)
         DOCKER_PLATFORM=linux/amd64
         IMG_ARCH=x86_64
-        QT_DIR_NAME=gcc_64
-        QT_HOST_ARCH=linux_gcc_64
-        DEPLOY_TOOL=linuxdeployqt
+        BUILD_TARGET=build-client
         ;;
     arm64)
         DOCKER_PLATFORM=linux/arm64
         IMG_ARCH=aarch64
-        QT_DIR_NAME=gcc_arm64
-        QT_HOST_ARCH=linux_gcc_arm64
-        DEPLOY_TOOL=linuxdeploy
+        BUILD_TARGET=build-client-kali
         ;;
     *)
         echo "[!] --arch must be host, amd64, or arm64 (got: $ARCH)" >&2
@@ -131,7 +109,7 @@ if [[ "$HOST_ARCH" != "$ARCH" ]]; then
     echo "    First build can take 10+ minutes; subsequent builds use the layer cache."
 fi
 
-# ---- apply multiarch patch (auto-revert on exit) -----------------------------
+# ---- apply kali arm64 stage patch (auto-revert on exit) ----------------------
 
 if git -C "$ADAPTIX_REPO" apply --check "$PATCH" 2>/dev/null; then
     echo "[*] Applying $PATCH"
@@ -154,16 +132,14 @@ fi
 mkdir -p "$DIST_DIR"
 
 # ---- build -------------------------------------------------------------------
-# Compose service reads ADAPTIX_CLIENT_* env vars to pick platform + build args.
+# Compose service reads ADAPTIX_CLIENT_* env vars to pick platform + target.
 
 export ADAPTIX_CLIENT_ARCH="$ARCH"
 export ADAPTIX_CLIENT_PLATFORM="$DOCKER_PLATFORM"
-export ADAPTIX_CLIENT_QT_DIR_NAME="$QT_DIR_NAME"
-export ADAPTIX_CLIENT_QT_HOST_ARCH="$QT_HOST_ARCH"
+export ADAPTIX_CLIENT_TARGET="$BUILD_TARGET"
 export ADAPTIX_CLIENT_IMG_ARCH="$IMG_ARCH"
-export ADAPTIX_CLIENT_DEPLOY_TOOL="$DEPLOY_TOOL"
 
-echo "[*] Building Linux client (arch=$ARCH, platform=$DOCKER_PLATFORM, tool=$DEPLOY_TOOL)"
+echo "[*] Building Linux client (arch=$ARCH, platform=$DOCKER_PLATFORM, target=$BUILD_TARGET)"
 docker compose --profile "$COMPOSE_PROFILE" up --build --abort-on-container-exit "$COMPOSE_SVC"
 
 # ---- verify + tidy -----------------------------------------------------------

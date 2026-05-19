@@ -1,0 +1,123 @@
+Adds a `build-client-kali` Dockerfile stage so the Linux client can build
+for arm64.
+
+The original `build-client` stage installs Qt 6.9.2 via aqtinstall, which
+publishes no Linux aarch64 binaries through 6.11.x (verified via
+`aqt list-qt linux desktop --arch 6.9.2`). Rather than parameterize that
+stage, this patch adds a parallel stage that pulls Qt from the
+kalilinux/kali-rolling distro (currently Qt 6.10.2, API-compatible with
+6.9.2 — AdaptixClient/CMakeLists.txt pins no minor minimum).
+
+The new stage uses linuxdeploy + linuxdeploy-plugin-qt for AppImage
+generation (linuxdeployqt is amd64-only and unmaintained). IMG_ARCH
+defaults to aarch64 since that's the stage's primary purpose; override to
+x86_64 if you want a distro-Qt amd64 AppImage as an alternative to the
+aqtinstall path.
+
+The original build-client stage is not touched, so amd64 builds with no
+overrides are byte-equivalent to the upstream image.
+
+diff --git a/Dockerfile b/Dockerfile
+index 1cdff70..4a3dac4 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -120,7 +120,99 @@ RUN cd /client-dist && \
+     ARCH=x86_64 ./squashfs-root/AppRun AdaptixClient.AppDir AdaptixClient-x86_64.AppImage && \
+     rm -rf squashfs-root
+ 
++# ============================================
++# Stage: build-client-kali (Qt client via kalilinux/kali-rolling distro Qt6)
++# ============================================
++# Used by the arm64 client build because aqtinstall publishes no Linux
++# aarch64 Qt binaries for any version through 6.11.x. Kali rolling ships
++# Qt 6.10.2 for both amd64 and arm64, which is API-compatible with the 6.9.2
++# the original stage targets (AdaptixClient pins no minor minimum).
++FROM kalilinux/kali-rolling:latest AS build-client-kali
++
++ENV DEBIAN_FRONTEND=noninteractive
++
++# IMG_ARCH drives the AppImage filename and the linuxdeploy/appimagetool
++# download arch. Defaults to aarch64 since that's the stage's reason for
++# existing; override to x86_64 to produce a distro-Qt amd64 AppImage as an
++# alternative to the aqtinstall path in build-client.
++ARG IMG_ARCH=aarch64
++
++RUN apt-get update && apt-get install -y --no-install-recommends \
++    build-essential \
++    ca-certificates \
++    cmake \
++    git \
++    qt6-base-dev \
++    qt6-base-dev-tools \
++    qt6-base-private-dev \
++    qt6-websockets-dev \
++    qt6-networkauth-dev \
++    qt6-svg-dev \
++    qt6-svg-plugins \
++    qt6-declarative-dev \
++    qmake6 \
++    libqt6sql6-sqlite \
++    libgl-dev \
++    libegl-dev \
++    libxkbcommon-dev \
++    libxkbcommon-x11-0 \
++    libxcb-cursor0 \
++    libxcb-icccm4 \
++    libxcb-image0 \
++    libxcb-keysyms1 \
++    libxcb-randr0 \
++    libxcb-render-util0 \
++    libxcb-shape0 \
++    libxcb-xfixes0 \
++    libxcb-xinerama0 \
++    libxcb-xkb1 \
++    libxcb1-dev \
++    libfontconfig1-dev \
++    libfreetype-dev \
++    libssl-dev \
++    libdbus-1-dev \
++    libsqlite3-dev \
++    wget \
++    file \
++    && rm -rf /var/lib/apt/lists/*
++
++# linuxdeploy + linuxdeploy-plugin-qt + appimagetool. All three are AppImages;
++# extract on install so the build step doesn't need FUSE (Kali has no libfuse2).
++RUN mkdir -p /tmp/ldd && cd /tmp/ldd && \
++    for tool in linuxdeploy linuxdeploy-plugin-qt; do \
++        url="https://github.com/linuxdeploy/${tool}/releases/download/continuous/${tool}-${IMG_ARCH}.AppImage"; \
++        wget -q "$url" -O "${tool}.AppImage" && chmod +x "${tool}.AppImage" && \
++        "./${tool}.AppImage" --appimage-extract >/dev/null && \
++        mv squashfs-root "/opt/${tool}" && \
++        ln -sf "/opt/${tool}/AppRun" "/usr/local/bin/${tool}"; \
++    done && \
++    wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${IMG_ARCH}.AppImage" \
++        -O appimagetool.AppImage && chmod +x appimagetool.AppImage && \
++    ./appimagetool.AppImage --appimage-extract >/dev/null && \
++    mv squashfs-root /opt/appimagetool && \
++    ln -sf /opt/appimagetool/AppRun /usr/local/bin/appimagetool && \
++    cd / && rm -rf /tmp/ldd
++
++WORKDIR /src
++COPY ./AdaptixClient /src
+ 
++RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && \
++    cmake --build build -j$(nproc)
++
++RUN mkdir -p /client-dist/AdaptixClient.AppDir/usr/bin && \
++    mkdir -p /client-dist/AdaptixClient.AppDir/usr/share/applications && \
++    mkdir -p /client-dist/AdaptixClient.AppDir/usr/share/icons/hicolor/256x256/apps && \
++    cp build/AdaptixClient /client-dist/AdaptixClient.AppDir/usr/bin/ && \
++    cp Resources/Logo.png /client-dist/AdaptixClient.AppDir/usr/share/icons/hicolor/256x256/apps/AdaptixClient.png && \
++    printf '[Desktop Entry]\nType=Application\nName=Adaptix Client\nExec=AdaptixClient\nIcon=AdaptixClient\nCategories=Network;Security;\nTerminal=false\n' \
++        > /client-dist/AdaptixClient.AppDir/usr/share/applications/AdaptixClient.desktop && \
++    ln -sf usr/bin/AdaptixClient /client-dist/AdaptixClient.AppDir/AppRun && \
++    ln -sf usr/share/icons/hicolor/256x256/apps/AdaptixClient.png /client-dist/AdaptixClient.AppDir/AdaptixClient.png && \
++    ln -sf usr/share/applications/AdaptixClient.desktop /client-dist/AdaptixClient.AppDir/AdaptixClient.desktop
++
++RUN cd /client-dist && \
++    QMAKE=/usr/bin/qmake6 /usr/local/bin/linuxdeploy --appdir AdaptixClient.AppDir --plugin qt && \
++    ARCH="${IMG_ARCH}" /usr/local/bin/appimagetool AdaptixClient.AppDir "AdaptixClient-${IMG_ARCH}.AppImage"
+ 
+ # ============================================
+ # Stage: build-server (server only)

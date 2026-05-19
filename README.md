@@ -83,13 +83,16 @@ The rendered profile lives at `./data/profile.yaml` and is reused on subsequent 
 
 ### 3. Build a client
 
-**Linux x86_64 AppImage:**
+**Linux AppImage (amd64 or arm64):**
 
 ```bash
-docker compose --profile build-client build
-docker compose --profile build-client up --abort-on-container-exit
-# → AdaptixClient-dist/AdaptixClient-x86_64.AppImage  (~57 MB)
+./build-client-linux.sh                  # host arch (amd64 or arm64)
+./build-client-linux.sh --arch amd64     # force x86_64 (Qt 6.9.2 via ubuntu:22.04 + aqtinstall)
+./build-client-linux.sh --arch arm64     # force aarch64 (Qt 6.10.2 via kali-rolling + distro packages)
+# → AdaptixClient-dist/AdaptixClient-{x86_64,aarch64}.AppImage
 ```
+
+amd64 builds use the upstream `build-client` Dockerfile stage as-is. arm64 builds use a new `build-client-kali` stage (added by `patches/adaptixclient-kali-arm64-stage.patch`, auto-reverted on script exit) — aqtinstall has no aarch64 Qt binaries through 6.11.x, so Kali's distro Qt6 fills the gap.
 
 **macOS Apple Silicon `.app`:**
 
@@ -168,6 +171,7 @@ Every customization is either a workspace-root file we authored or a tracked pat
 | Kharon + AxScripts wired into server profile | `profile.kharon.yaml` | Adds the two Kharon extenders and the two AxScript module sets to the upstream default profile. |
 | macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `build-client-macos.sh` applies and reverts it around each build. |
 | nanodump host-strip fix | `patches/extension-kit-nanodump-host-strip.patch` | Upstream nanodump strips its host-built `restore_signature` ELF with the Windows cross-strip, which breaks on arm64 hosts. The patch deletes the redundant strip line; `gcc -s` on the prior line already strips it. Applied inside the build container by the Dockerfile. |
+| arm64 client build via kali-rolling | `patches/adaptixclient-kali-arm64-stage.patch` | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x, so the upstream `build-client` Dockerfile stage can't target arm64. The patch appends a new `build-client-kali` stage that uses kali-rolling's distro Qt 6.10.2 + `linuxdeploy` instead. Purely additive — the original `build-client` stage is unchanged, so amd64 builds are byte-equivalent to upstream. Applied on the host by `build-client-linux.sh` with auto-revert. |
 | macOS native build script | `build-client-macos.sh` | macdeployqt + RPATH cleanup + ad-hoc signing — required to produce a portable Apple Silicon `.app` that launches outside the build host. |
 | Windows prerequisite installer | `install-prereqs-windows.ps1` | Automates the one-time setup of MSYS2, MinGW64 toolchain, Qt6, OpenSSL, CMake, and Ninja needed by `build.bat` on a Windows machine. |
 | Kharon graft inside the build | (Dockerfile-only, no source-tree change) | The Dockerfile copies `Kharon/agent_kharon` and `Kharon/listener_kharon_http` into `AdaptixServer/extenders/` and runs `go work use` *inside* the container, mirroring what `Kharon/setup_kharon.sh` does — but only inside the build, never on the host tree. |

@@ -34,10 +34,12 @@ services:
       # - ADAPTIX_OPERATORS=operator1:secret1,operator2:secret2
     restart: unless-stopped
 
-  # Linux AppImage build. Drives AdaptixC2/Dockerfile's build-client stage with
-  # the multiarch patch applied (Qt 6.9.2 via aqtinstall, ubuntu:22.04).
-  # amd64 keeps linuxdeployqt + appimagetool; arm64 swaps to linuxdeploy +
-  # linuxdeploy-plugin-qt because linuxdeployqt has no aarch64 release.
+  # Linux AppImage build. Drives one of two AdaptixC2/Dockerfile stages:
+  #   amd64 → build-client       (ubuntu:22.04 + aqtinstall Qt 6.9.2 + linuxdeployqt)
+  #   arm64 → build-client-kali  (kali-rolling + distro Qt 6.10.2 + linuxdeploy)
+  # The arm64 path exists because aqtinstall publishes no Linux aarch64 Qt
+  # binaries; Kali's distro Qt6 fills the gap. The kali stage is added by
+  # patches/adaptixclient-kali-arm64-stage.patch (applied by build-client-linux.sh).
   # Defaults reproduce the original amd64 path; build-client-linux.sh sets the
   # ADAPTIX_CLIENT_* env vars when --arch arm64 is requested.
   client-linux:
@@ -46,14 +48,11 @@ services:
     build:
       context: ./AdaptixC2
       dockerfile: Dockerfile
-      target: build-client
+      target: ${ADAPTIX_CLIENT_TARGET:-build-client}
       platforms:
         - ${ADAPTIX_CLIENT_PLATFORM:-linux/amd64}
       args:
-        QT_DIR_NAME: ${ADAPTIX_CLIENT_QT_DIR_NAME:-gcc_64}
-        QT_HOST_ARCH: ${ADAPTIX_CLIENT_QT_HOST_ARCH:-linux_gcc_64}
         IMG_ARCH: ${ADAPTIX_CLIENT_IMG_ARCH:-x86_64}
-        DEPLOY_TOOL: ${ADAPTIX_CLIENT_DEPLOY_TOOL:-linuxdeployqt}
     image: adaptixc2-omni-client-linux-builder:${ADAPTIX_CLIENT_ARCH:-amd64}
     container_name: adaptixc2-omni-client-linux-builder-${ADAPTIX_CLIENT_ARCH:-amd64}
     volumes:
