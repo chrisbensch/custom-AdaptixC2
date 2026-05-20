@@ -1,0 +1,81 @@
+# escape=`
+#
+# Windows-container build of AdaptixClient.exe.
+#
+# Requires Docker Desktop running in Windows container mode. The build installs
+# MSYS2 inside the container, uses the same MinGW64/Qt6 toolchain as the native
+# Windows host build, and stages the deployed client under C:\client-dist.
+
+ARG WINDOWS_BASE_IMAGE=mcr.microsoft.com/windows/servercore:ltsc2022
+FROM ${WINDOWS_BASE_IMAGE} AS build
+
+SHELL ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+ARG MSYS2_ARCHIVE_URL=https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.sfx.exe
+ENV MSYS2_ARCHIVE_URL=${MSYS2_ARCHIVE_URL}
+
+WORKDIR C:\src
+
+RUN Write-Host 'Downloading MSYS2 base archive...'; `
+    Invoke-WebRequest -UseBasicParsing -Uri $env:MSYS2_ARCHIVE_URL -OutFile C:\msys2-base.sfx.exe; `
+    Write-Host 'Extracting MSYS2 to C:\msys64...'; `
+    Start-Process -FilePath C:\msys2-base.sfx.exe -ArgumentList '-y', '-oC:\' -NoNewWindow -Wait; `
+    if (!(Test-Path C:\msys64\usr\bin\bash.exe)) { throw 'MSYS2 bash.exe not found after extraction' }; `
+    Remove-Item C:\msys2-base.sfx.exe -Force
+
+RUN $bash = 'C:\msys64\usr\bin\bash.exe'; `
+    Write-Host 'Updating MSYS2 package database (pass 1)...'; `
+    & $bash -lc 'pacman -Syu --noconfirm'; `
+    if ($LASTEXITCODE -ne 0) { Write-Host 'pacman pass 1 exited non-zero after core update; continuing with pass 2' }; `
+    Write-Host 'Updating MSYS2 package database (pass 2)...'; `
+    & $bash -lc 'pacman -Syu --noconfirm'; `
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+RUN $bash = 'C:\msys64\usr\bin\bash.exe'; `
+    & $bash -lc 'pacman -S --needed --noconfirm mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6 mingw-w64-x86_64-openssl'; `
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+ENV PATH="C:\msys64\mingw64\bin;C:\msys64\usr\bin;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+
+COPY AdaptixC2\AdaptixClient C:\src\AdaptixClient
+
+RUN Set-Location C:\src\AdaptixClient; `
+    cmake -S . -B cmake-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release; `
+    cmake --build cmake-build-release --config Release; `
+    New-Item -ItemType Directory -Force C:\client-dist | Out-Null; `
+    Copy-Item cmake-build-release\AdaptixClient.exe C:\client-dist\AdaptixClient.exe; `
+    Set-Location C:\client-dist; `
+    windeployqt.exe AdaptixClient.exe; `
+    $mingwBin = 'C:\msys64\mingw64\bin'; `
+    $extraDllGlobs = @( `
+        'libwinpthread-1.dll', `
+        'libgcc_s_seh-1.dll', `
+        'libstdc++-6.dll', `
+        'libfreetype-6.dll', `
+        'libharfbuzz-0.dll', `
+        'libmd4c.dll', `
+        'libpng16-16.dll', `
+        'zlib1.dll', `
+        'libb2-1.dll', `
+        'libdouble-conversion.dll', `
+        'libicuin*.dll', `
+        'libicuuc*.dll', `
+        'libicudt*.dll', `
+        'libpcre2-16-0.dll', `
+        'libbrotlidec.dll', `
+        'libzstd.dll', `
+        'libbz2-1.dll', `
+        'libglib-2.0-0.dll', `
+        'libgraphite2.dll', `
+        'libbrotlicommon.dll', `
+        'libpcre2-8-0.dll', `
+        'libintl-8.dll', `
+        'libiconv-2.dll' `
+    ); `
+    foreach ($glob in $extraDllGlobs) { `
+        Get-ChildItem -Path $mingwBin -Filter $glob -File -ErrorAction SilentlyContinue | `
+            Copy-Item -Destination C:\client-dist -Force; `
+    }; `
+    Get-ChildItem C:\client-dist | Select-Object Name, Length
+
+CMD ["cmd", "/c", "dir C:\\client-dist"]

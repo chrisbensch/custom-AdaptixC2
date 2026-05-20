@@ -31,10 +31,12 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 ├── scripts/                                       ← host-side build helpers (callable from repo root)
 │   ├── build-client-linux.sh                      ← Linux AppImage build (amd64 + arm64) via Docker; §5.2 + §6.4
 │   ├── build-client-macos.sh                      ← native macOS .app build (Apple Silicon arm64); §5.4
+│   ├── build-client-windows-container.ps1         ← Windows exe build via Windows container; §11.2
 │   └── install-prereqs-windows.ps1                ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6); §11
 │
 ├── docker/
-│   └── entrypoint.sh     ← runtime image entrypoint: TLS cert-gen + profile rendering on first start (§5.7)
+│   ├── Dockerfile.windows-client                  ← Windows Server Core + MSYS2 client build image; §11.2
+│   └── entrypoint.sh                              ← runtime image entrypoint: TLS cert-gen + profile rendering on first start (§5.7)
 │
 ├── patches/                                       ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch           ← see §5.5 / §6.1
@@ -72,9 +74,11 @@ These are the exact commits the integration was designed for. When re-applying a
 | Qt (Linux client AppImage, amd64) | **6.9.2** (via aqtinstall, from upstream AdaptixC2/Dockerfile `build-client` stage) | Reused as-is from upstream. |
 | Qt (Linux client AppImage, arm64) | **6.10.2** (distro packages from `kalilinux/kali-rolling`, via new `build-client-kali` stage added by `patches/adaptixclient-kali-arm64-stage.patch`) | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x; Kali's distro Qt6 fills the gap. API-compatible with 6.9.2. |
 | Qt (macOS client) | Homebrew **qt@6** (currently 6.11.x) | Native arm64; works because of the `if(APPLE)` CMake patch. |
+| Qt (Windows client) | MSYS2 `mingw-w64-x86_64-qt6` | Used by both the native host installer and the Windows-container build. |
 | Debian base (build) | `bookworm` | Matches upstream. |
 | Ubuntu base (Linux client amd64) | `22.04` | From upstream AdaptixC2/Dockerfile `build-client` stage. |
 | Kali base (Linux client arm64) | `kalilinux/kali-rolling:latest` | Provides arm64 Qt 6.10.2; tracked as a rolling distro since this is the only Qt-6.9+ aarch64 source we have. |
+| Windows base (Windows client container) | `mcr.microsoft.com/windows/servercore:ltsc2022` | Installs MSYS2 inside the container and produces a deployed Windows client without host toolchain installs. Must run under Docker Desktop Windows container mode. |
 
 ## 4. Decisions baked into the integration
 
@@ -88,6 +92,8 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 6. **Linux AppImage delivery:** add a `client-linux` service to the workspace-root `docker-compose.yml`. For amd64 it points at `AdaptixC2/Dockerfile`'s upstream `build-client` stage (Qt 6.9.2 via aqtinstall, ubuntu:22.04). For arm64 it points at a new `build-client-kali` stage added via `patches/adaptixclient-kali-arm64-stage.patch` (Qt 6.10.2 via distro packages on kali-rolling) — aqtinstall publishes no aarch64 Qt binaries. Target swap is driven by `ADAPTIX_CLIENT_TARGET`; defaults preserve the original amd64 path.
 7. **TLS cipher policy:** ECDHE-only suites in `profile.kharon.yaml`. The legacy `TLS_RSA_WITH_AES_*_GCM_*` suites (no forward secrecy) that upstream ships were dropped to enforce PFS.
 8. **Upstream version pinning at build time:** `golang:1.25.4-bookworm` (specific patch, not the floating `1.25`) and `go-win7` pinned via `ARG GO_WIN7_SHA` (currently `15ad42b…`). Bumping is a one-line ARG edit; reproducibility is a first-class requirement.
+
+9. **Windows client container build:** `docker/Dockerfile.windows-client` installs MSYS2 inside a Windows Server Core container and builds the same MinGW64 Qt client without mutating the host. `scripts/build-client-windows-container.ps1` can call Docker Desktop's local `DockerCli.exe -SwitchWindowsEngine` when requested, but the engine switch is global and temporarily disables Linux-container workflows.
 
 ## 5. Files added by this workspace
 
@@ -288,6 +294,25 @@ Subsequent starts skip both blocks: the cert + profile + credentials file alread
 
 Why this lives in a separate file (vs. heredoc in the Dockerfile): the script grew enough logic (sed-based templating, IFS handling, persistence) that an inline heredoc would be hard to review and test. Keeping it at `docker/entrypoint.sh` means `shellcheck`-able, diff-able, and editable without rebuilding the image to inspect it.
 
+### 5.8 `docker/Dockerfile.windows-client` + `scripts/build-client-windows-container.ps1`
+
+Containerized Windows GUI build. This is separate from the host prerequisite installer because Windows containers do not reliably have `winget` and should not mutate the workstation. The Dockerfile uses `mcr.microsoft.com/windows/servercore:ltsc2022`, downloads MSYS2's self-extracting base archive, installs the MinGW64 packages (`toolchain`, `cmake`, `ninja`, `qt6`, `openssl`) with `pacman`, builds `AdaptixClient` with CMake/Ninja, runs `windeployqt`, then copies dynamic MinGW/Qt support DLLs into `C:\client-dist`.
+
+The PowerShell wrapper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1
+powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1 -SwitchToWindowsEngine
+```
+
+Key behavior:
+
+1. Requires Docker Desktop Windows container mode. If Docker reports `OSType=linux`, it fails with a clear message unless `-SwitchToWindowsEngine` is passed.
+2. `-SwitchToWindowsEngine` calls Docker Desktop's local `DockerCli.exe -SwitchWindowsEngine`, then waits for `docker info` to report `windows`. This is programmatic but global: running Linux containers are interrupted while Docker Desktop restarts the daemon.
+3. Builds image tag `adaptixc2-omni-client-windows:latest` by default.
+4. Creates a temporary extraction container and `docker cp`s `C:\client-dist` to `AdaptixClient-dist\windows`.
+5. The Dockerfile uses wildcard ICU DLL globs (`libicuin*.dll`, `libicuuc*.dll`, `libicudt*.dll`) to avoid the upstream `build.bat` version-number gotcha.
+
 ## 6. Patches to upstream subrepos
 
 ### 6.1 `AdaptixC2/AdaptixClient/CMakeLists.txt` — macOS bundle support
@@ -414,6 +439,11 @@ docker compose --profile build-client up --abort-on-container-exit
 # Step 2 — build (standard cmd.exe):
 #   cd AdaptixC2\AdaptixClient && build.bat
 #   → AdaptixC2\AdaptixClient\dist\AdaptixClient.exe + bundled DLLs
+
+# Windows client exe via Windows container (host stays clean; Docker Desktop must
+# be in Windows container mode, or pass -SwitchToWindowsEngine):
+powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1
+#   → AdaptixClient-dist\windows\AdaptixClient.exe + deployed DLLs/plugins
 ```
 
 ## 8. Verification checklist
@@ -443,6 +473,11 @@ docker compose --profile build-client up --abort-on-container-exit
 2. Launch `dist\AdaptixClient.exe` — window appears, no missing-DLL error dialog. SmartScreen may prompt on first run; right-click → "Run anyway" clears it.
 3. Connect to `https://<server>:4321/endpoint` — login dialog appears and authenticates.
 4. Listener creation dialog shows all 9 extenders; AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` loaded.
+
+**Windows client exe via container**:
+1. `powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1` completes under Docker Desktop Windows container mode.
+2. `dir AdaptixClient-dist\windows\AdaptixClient.exe` → file exists and is non-zero.
+3. Launch `AdaptixClient-dist\windows\AdaptixClient.exe` — window appears, no missing-DLL error dialog.
 
 ## 9. Known issues and gotchas
 
@@ -521,6 +556,22 @@ powershell -ExecutionPolicy Bypass -File scripts\install-prereqs-windows.ps1
 ```
 
 The script installs MSYS2 and Git for Windows via winget, runs the two-pass pacman update, installs all required MinGW64 packages, verifies the binaries, and checks that `Qt6_DIR` in `CMakeLists.txt` matches the MSYS2 path. See the script's inline help (`Get-Help .\scripts\install-prereqs-windows.ps1`) for parameters (`-Msys2Root`, `-SkipGit`).
+
+#### Containerized build (host stays clean)
+
+If Docker Desktop is installed with Windows containers enabled, the Windows client can be built without installing MSYS2 or Qt on the workstation:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1
+```
+
+If Docker Desktop is currently in Linux container mode, either switch from the Docker Desktop tray menu first or let the wrapper call Docker Desktop's local engine switch:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-client-windows-container.ps1 -SwitchToWindowsEngine
+```
+
+Output lands in `AdaptixClient-dist\windows\`. The switch is global to Docker Desktop: while the Windows engine is active, Linux-container workflows like `docker compose --profile build build` for the server image are unavailable until Docker Desktop is switched back to Linux containers.
 
 #### Manual install
 

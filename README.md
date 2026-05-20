@@ -123,6 +123,19 @@ build.bat
 
 The upstream build uses **MSYS2 + MinGW64 + Ninja** — Visual Studio / MSVC is not required. See [BLUEPRINT.md §11](./BLUEPRINT.md) for the complete prerequisites, per-step explanation, DLL reference table, and all Windows-specific gotchas (including the ICU version-bump issue and the `windeployqt` PATH requirement).
 
+**Windows x86_64 (containerized build, host stays clean):**
+
+```powershell
+# Requires Docker Desktop in Windows container mode.
+.\scripts\build-client-windows-container.ps1
+
+# Or let the script ask Docker Desktop to switch from Linux containers first.
+.\scripts\build-client-windows-container.ps1 -SwitchToWindowsEngine
+# → AdaptixClient-dist\windows\AdaptixClient.exe + deployed DLLs/plugins
+```
+
+This path installs MSYS2 and Qt inside a Windows Server Core build image rather than on your workstation. Docker Desktop's engine switch is global: while in Windows container mode, Linux-container workflows like the server image build are unavailable until you switch back.
+
 ### 4. Connect
 
 Point the client at `https://<server-host>:4321/endpoint` and log in. The listener-creation dialog will show all nine extenders; the AxScript Manager shows `extension-kit.axs` and `kh_modules.axs` already loaded.
@@ -144,7 +157,11 @@ AdaptixC2-Omni/
 ├── scripts/              ← host-side build helpers
 │   ├── build-client-linux.sh        ← Linux AppImage build (amd64 + arm64 via Docker)
 │   ├── build-client-macos.sh        ← native macOS .app build (Apple Silicon arm64)
+│   ├── build-client-windows-container.ps1 ← Windows exe build via Windows container
 │   └── install-prereqs-windows.ps1  ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6)
+├── docker/
+│   ├── entrypoint.sh
+│   └── Dockerfile.windows-client    ← Windows Server Core + MSYS2 client build image
 ├── patches/              ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch
 │   ├── adaptixclient-kali-arm64-stage.patch
