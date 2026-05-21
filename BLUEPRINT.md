@@ -822,7 +822,7 @@ Per job, the steps are:
 4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`, and the same hardened posture compose enforces in §5.2 (`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL` + the four cap-adds, `--security-opt no-new-privileges:true`). Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. Once healthy, assert PID 1 in the container is running as UID 10001 (`adaptix`) by reading `/proc/1/status` via `docker exec` — catches a dropped `exec gosu` in the entrypoint. On failure, dumps `docker logs` for diagnosis.
 5. **Teardown** — `docker rm -f` the smoke container in an `if: always()` step so the runner is clean for the next job.
 
-Total wall time: roughly 12–18 minutes per arch (the build dominates; the smoke test is sub-90s once the image is up).
+Total wall time: about **7–8 minutes** for both arches together (the two matrix jobs run in parallel; the build dominates each at ~7 min and the smoke test is sub-90s once the image is up). An earlier draft of this section quoted 12–18 minutes per arch — that was a conservative estimate from the first runs and has been borne out as too high by ~6 PRs of measured runs.
 
 ### 12.2 Why arm64 in CI
 
