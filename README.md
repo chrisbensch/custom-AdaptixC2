@@ -81,6 +81,8 @@ docker compose --profile runtime up -d
 
 The rendered profile lives at `./data/profile.yaml` and is reused on subsequent starts. To rotate credentials or change other settings, edit that file and run `docker compose --profile runtime restart`. The committed [`profile.kharon.yaml`](./profile.kharon.yaml) is the *template* used at first render; editing it after first start has no effect — delete `./data/profile.yaml` and restart to re-render from the template.
 
+The server runs as an unprivileged user (UID/GID 10001, `adaptix`) inside the container with a read-only rootfs, only the four capabilities it actually needs (`CHOWN`, `SETUID`, `SETGID`, `NET_BIND_SERVICE`), and `no-new-privileges`. Files written by the entrypoint into `./data/` end up owned by UID 10001 on the host — if you need to read them as your shell user, `sudo chown -R "$USER" ./data` or just `sudo cat ./data/credentials.txt`.
+
 ### 3. Build a client
 
 **Linux AppImage (amd64 or arm64):**

@@ -18,6 +18,15 @@ echo "[*] Starting Adaptix C2 Server..."
 
 mkdir -p /app/data
 
+# Take ownership of the bind mount as root before doing any cert/profile writes.
+# The host directory's ownership doesn't match UID 0 (in CI it's the runner's
+# UID; on a real host it's whoever ran `mkdir -p data`). Our cap set is
+# deliberately missing CAP_DAC_OVERRIDE, so without this step root can't write
+# into /app/data. We chown the directory only — files already inside (from
+# prior runs) stay adaptix-owned and aren't touched. Idempotent.
+RUNTIME_USER="${RUNTIME_USER:-adaptix}"
+chown root:root /app/data
+
 if [ ! -f /app/data/server.rsa.crt ] || [ ! -f /app/data/server.rsa.key ]; then
     echo "[*] Generating self-signed certificates..."
     openssl req -x509 -nodes -newkey rsa:2048 \
@@ -55,5 +64,9 @@ if [ ! -f /app/data/profile.yaml ]; then
     echo "[+] Teamserver password: ${ADAPTIX_TEAMSERVER_PASSWORD}"
 fi
 
-echo "[+] Launching Adaptix Server..."
-exec "$@"
+# Hand /app/data (directory + anything we just created above + anything from
+# prior runs) to the unprivileged runtime user, then drop privileges.
+chown -R "${RUNTIME_USER}:${RUNTIME_USER}" /app/data
+
+echo "[+] Launching Adaptix Server as ${RUNTIME_USER}..."
+exec gosu "${RUNTIME_USER}" "$@"

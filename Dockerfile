@@ -130,7 +130,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
         curl \
+        gosu \
+        libcap2-bin \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Unprivileged runtime account. The entrypoint stays root long enough to chown
+# the /app/data bind mount and render the profile, then drops to `adaptix` via
+# `gosu` before exec'ing the server. /app itself is left root-owned + world-
+# readable so even a write-capable container can't modify the server binary.
+RUN groupadd --system --gid 10001 adaptix && \
+    useradd  --system --uid 10001 --gid adaptix \
+             --no-create-home --shell /usr/sbin/nologin adaptix
 
 WORKDIR /app
 
@@ -153,6 +163,14 @@ COPY Kharon/listener_kharon_http/profiles/template.json /app/kharon-template.jso
 # First-start bootstrap: TLS cert generation + profile rendering.
 COPY docker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
+
+# File capability on the server binary so beacon listeners can bind <1024
+# (typically :80 / :443 / :53) after gosu drops privileges. setuid(0 → 10001)
+# clears the process cap sets, but execve re-derives them from file caps —
+# only NET_BIND_SERVICE travels with the binary; everything else stays dropped.
+# Requires the container's bounding set to include NET_BIND_SERVICE
+# (see docker-compose.yml `cap_add`).
+RUN setcap cap_net_bind_service=+ep /app/adaptixserver
 
 # EXPOSE is a no-op under network_mode: host (the compose runtime default).
 # Kept for `docker run -P` users: 4321 is the teamserver. Beacon listener ports

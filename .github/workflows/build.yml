@@ -24,21 +24,46 @@ jobs:
       - name: Build runtime image
         run: docker compose --profile build build
       - name: Smoke-test the runtime image
+        # Mirrors the hardened posture from docker-compose.yml so CI catches
+        # regressions in privilege reduction: read-only rootfs, /tmp tmpfs,
+        # cap_drop=ALL with only the four caps the entrypoint + listeners
+        # genuinely need, and no-new-privileges. Healthcheck reaching `healthy`
+        # implies the server bound 4321 successfully as the unprivileged user.
         run: |
           mkdir -p data
           docker run -d --name omni-smoke -p 4321:4321 \
               -v "$PWD/data:/app/data" \
+              --read-only \
+              --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+              --cap-drop ALL \
+              --cap-add CHOWN \
+              --cap-add SETUID \
+              --cap-add SETGID \
+              --cap-add NET_BIND_SERVICE \
+              --security-opt no-new-privileges:true \
               -e ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw \
               adaptixc2-omni:latest
           for i in $(seq 1 30); do
               status=$(docker inspect --format '{{.State.Health.Status}}' omni-smoke 2>/dev/null || echo none)
               echo "[$i] health=$status"
-              [ "$status" = "healthy" ] && exit 0
+              [ "$status" = "healthy" ] && break
               sleep 3
           done
-          echo "--- docker logs ---"
-          docker logs omni-smoke
-          exit 1
+          if [ "$status" != "healthy" ]; then
+              echo "--- docker logs ---"
+              docker logs omni-smoke
+              exit 1
+          fi
+          # Privilege-reduction assertion: PID 1 in the container must be the
+          # server running as the unprivileged `adaptix` (UID 10001), not root.
+          # Catches regressions like a dropped `exec gosu` in the entrypoint.
+          uid=$(docker exec omni-smoke awk '/^Uid:/ {print $2; exit}' /proc/1/status)
+          echo "PID 1 UID=$uid"
+          if [ "$uid" != "10001" ]; then
+              echo "::error::expected PID 1 to run as UID 10001 (adaptix), got '$uid'"
+              docker exec omni-smoke ps -o user,uid,pid,cmd -ax || true
+              exit 1
+          fi
       - name: Tear down
         if: always()
         run: docker rm -f omni-smoke 2>/dev/null || true

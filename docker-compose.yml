@@ -22,6 +22,25 @@ services:
     image: adaptixc2-omni:latest
     container_name: adaptixc2-omni-server
     network_mode: host
+    # Runtime privilege reduction. The entrypoint stays root briefly to chown
+    # the bind mount and render the profile, then `gosu`s to the unprivileged
+    # `adaptix` (UID 10001) before exec'ing the server. All persistent state
+    # (DB, listener metadata, downloads, screenshots, certs, profile) lives
+    # under /app/data — the only writable mount — so the rootfs is read-only.
+    read_only: true
+    tmpfs:
+      # Go's runtime/temp scratch and openssl's mktemp in the entrypoint both
+      # land here. Small cap because no large temp files are expected.
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN              # entrypoint normalises /app/data ownership
+      - SETUID             # gosu drops privileges before exec
+      - SETGID             # gosu drops privileges before exec
+      - NET_BIND_SERVICE   # operator listeners often want :80 / :443 / :53
+    security_opt:
+      - no-new-privileges:true
     volumes:
       # The runtime profile (./data/profile.yaml) is rendered by the entrypoint
       # on first start. Edit it there and `restart` to apply changes.
