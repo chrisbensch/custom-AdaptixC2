@@ -302,19 +302,19 @@ First-start bootstrap for the runtime image. Replaces the previous inline-genera
 
 Behavior — runs as root so it can take care of the bind-mount + cert + profile work, then drops to `adaptix` before exec'ing the server:
 
-1. **Normalise `/app/data` ownership** — `chown -R adaptix:adaptix /app/data`. The bind mount comes in with whatever ownership the host directory carried, which may not match the unprivileged runtime UID. Idempotent; requires `CAP_CHOWN` in the container's bounding set (§5.2).
-2. **TLS certs** — if `/app/data/server.rsa.crt` or `.key` is missing, generate a 2048-bit self-signed pair with `openssl req -x509 -nodes` (subject `/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost`, 10-year validity), `chmod 600` the key.
+1. **Take ownership of the bind mount** — `chown root:root /app/data` (directory only, not recursive). The bind mount comes in with whatever ownership the host directory carried (the operator's UID locally, the runner's UID in CI); without this, root in the entrypoint can't write `/app/data/server.rsa.key` because our cap set deliberately excludes `CAP_DAC_OVERRIDE`. The chown only touches the directory inode — files inside from prior runs stay adaptix-owned and the entrypoint never reads/modifies them, only checks existence (which needs search-x on the parent, not read on the file). Requires `CAP_CHOWN` (§5.2).
+2. **TLS certs** — if `/app/data/server.rsa.crt` or `.key` is missing, generate a 2048-bit self-signed pair with `openssl req -x509 -nodes` (subject `/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost`, 10-year validity), `chmod 600` the key. Both files end up root-owned at this point.
 3. **Profile rendering** — if `/app/data/profile.yaml` is missing:
    - Resolve `ADAPTIX_TEAMSERVER_PASSWORD` (default: `openssl rand -hex 24`).
    - Resolve `ADAPTIX_OPERATORS` (default: `operator1:<openssl rand -hex 16>`). Format: comma-separated `user:pass` pairs.
-   - Expand the operators env var into a YAML block (`    name: "pass"` lines) in a temp file.
+   - Expand the operators env var into a YAML block (`    name: "pass"` lines) in a temp file under `/tmp` (the tmpfs).
    - `sed` the template `/app/profile.yaml.tmpl` → `/app/data/profile.yaml`, substituting `__ADAPTIX_TEAMSERVER_PASSWORD__` and inserting the operators block in place of `__ADAPTIX_OPERATORS_BLOCK__`.
    - `chmod 600` the rendered profile.
    - Append the resolved password and operator string to `/app/data/credentials.txt` (also `0600`) and echo the password to the container log so `docker compose logs` captures it on first start.
-4. **Re-chown** — `chown -R adaptix:adaptix /app/data` once more so any files written in step 2/3 above (created as root) belong to the unprivileged runtime user before privilege drop.
+4. **Hand off to the runtime user** — `chown -R adaptix:adaptix /app/data` (recursive) so the directory, the new files just created, and any prior-run state all belong to the unprivileged runtime user before privilege drop.
 5. **Drop privileges and exec** — `exec gosu adaptix "$@"` invokes the CMD (`/app/adaptixserver -profile /app/data/profile.yaml`) as UID 10001. The setuid clears process caps; `setcap cap_net_bind_service=+ep` on the binary (§5.1) restores that one cap on execve so listeners can still bind low ports.
 
-Subsequent starts skip the cert + profile + credentials blocks (files already exist) but still re-chown `/app/data` and drop privileges, so the steady-state behavior is identical regardless of how many times the container is restarted. Rotation flow: edit `data/profile.yaml` and restart, or `rm data/profile.yaml` and re-launch with the env vars set.
+Subsequent starts skip the cert + profile + credentials blocks (files already exist) but still bounce ownership root → adaptix and drop privileges, so the steady-state behavior is identical regardless of how many times the container is restarted. Rotation flow: edit `data/profile.yaml` and restart, or `rm data/profile.yaml` and re-launch with the env vars set.
 
 `RUNTIME_USER` (default `adaptix`) can override the drop target if you've baked a different user into a downstream image; the env var feeds both the `chown` and the final `gosu` call.
 
