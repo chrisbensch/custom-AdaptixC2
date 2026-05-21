@@ -71,7 +71,7 @@ docker compose --profile runtime logs -f
 docker compose --profile runtime down
 ```
 
-On first start the entrypoint generates random teamserver credentials, writes them to `./data/credentials.txt`, and prints the teamserver password to the container log. To set your own values instead, export them before the first `up`:
+On first start the entrypoint generates random teamserver credentials and writes them to `./data/credentials.txt` (mode 600). The container log prints only a render confirmation — the password itself is never echoed, so `docker logs` can't be used to recover the credential after the fact. Read `./data/credentials.txt` instead. To set your own values instead of the random defaults, export them before the first `up`:
 
 ```bash
 export ADAPTIX_TEAMSERVER_PASSWORD='your-strong-password'

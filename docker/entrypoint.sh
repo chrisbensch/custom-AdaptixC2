@@ -12,7 +12,8 @@
 # Subsequent starts reuse /app/data/profile.yaml verbatim. To rotate credentials,
 # edit that file directly and restart, or delete it and re-launch with the env
 # vars set.
-set -e
+set -euo pipefail
+trap 'echo "[-] entrypoint failed at line ${LINENO}" >&2' ERR
 
 echo "[*] Starting Adaptix C2 Server..."
 
@@ -37,21 +38,50 @@ if [ ! -f /app/data/server.rsa.crt ] || [ ! -f /app/data/server.rsa.key ]; then
 fi
 
 if [ ! -f /app/data/profile.yaml ]; then
+    # Reject explicit empty overrides. Without this guard, `ADAPTIX_OPERATORS=`
+    # (typo in compose) would silently fall through to the random default,
+    # which can mask broken configuration.
+    if [ "${ADAPTIX_TEAMSERVER_PASSWORD+set}" = "set" ] && [ -z "${ADAPTIX_TEAMSERVER_PASSWORD}" ]; then
+        echo "[-] ADAPTIX_TEAMSERVER_PASSWORD is set but empty; refusing to start" >&2
+        exit 1
+    fi
+    if [ "${ADAPTIX_OPERATORS+set}" = "set" ] && [ -z "${ADAPTIX_OPERATORS}" ]; then
+        echo "[-] ADAPTIX_OPERATORS is set but empty; refusing to start" >&2
+        exit 1
+    fi
+
     : "${ADAPTIX_TEAMSERVER_PASSWORD:=$(openssl rand -hex 24)}"
     : "${ADAPTIX_OPERATORS:=operator1:$(openssl rand -hex 16)}"
 
     ops_file="$(mktemp)"
-    IFS=','
-    for kv in $ADAPTIX_OPERATORS; do
-        printf '    %s: "%s"\n' "${kv%%:*}" "${kv#*:}" >> "$ops_file"
+    trap 'rm -f "${ops_file}"' EXIT
+
+    # Bash array iteration via IFS+read avoids the word-splitting/globbing
+    # hazards of `for kv in $unquoted_var`. Validate each entry up front so a
+    # malformed list (missing colon, empty user, empty pass) fails fast with a
+    # clear message rather than rendering a broken profile.
+    IFS=',' read -ra ops_arr <<< "${ADAPTIX_OPERATORS}"
+    for kv in "${ops_arr[@]}"; do
+        case "${kv}" in
+            *:*) ;;
+            *)
+                echo "[-] ADAPTIX_OPERATORS entry missing ':' separator: '${kv}'" >&2
+                exit 1
+                ;;
+        esac
+        user="${kv%%:*}"
+        pass="${kv#*:}"
+        if [ -z "${user}" ] || [ -z "${pass}" ]; then
+            echo "[-] ADAPTIX_OPERATORS entry has empty user or password: '${kv}'" >&2
+            exit 1
+        fi
+        printf '    %s: "%s"\n' "${user}" "${pass}" >> "${ops_file}"
     done
-    unset IFS
 
     sed -e "s|__ADAPTIX_TEAMSERVER_PASSWORD__|${ADAPTIX_TEAMSERVER_PASSWORD}|" \
         -e "/__ADAPTIX_OPERATORS_BLOCK__/r ${ops_file}" \
         -e "/__ADAPTIX_OPERATORS_BLOCK__/d" \
         /app/profile.yaml.tmpl > /app/data/profile.yaml
-    rm -f "$ops_file"
     chmod 600 /app/data/profile.yaml
 
     {
@@ -60,8 +90,11 @@ if [ ! -f /app/data/profile.yaml ]; then
     } > /app/data/credentials.txt
     chmod 600 /app/data/credentials.txt
 
-    echo "[+] Wrote /app/data/profile.yaml and /app/data/credentials.txt"
-    echo "[+] Teamserver password: ${ADAPTIX_TEAMSERVER_PASSWORD}"
+    # The teamserver password is recoverable from /app/data/credentials.txt
+    # (mode 600). Don't echo it to stdout — Docker captures stdout/stderr in
+    # the container log forever, so a `docker logs` reader could otherwise
+    # pull historic credentials out of the log even after rotation.
+    echo "[+] Rendered /app/data/profile.yaml; credentials persisted to /app/data/credentials.txt"
 fi
 
 # Hand /app/data (directory + anything we just created above + anything from
