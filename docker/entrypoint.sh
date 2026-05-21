@@ -18,6 +18,12 @@ echo "[*] Starting Adaptix C2 Server..."
 
 mkdir -p /app/data
 
+# The bind mount comes in with whatever ownership the host directory has, so
+# we normalise it to the unprivileged runtime user every start. Idempotent; a
+# no-op once the tree already belongs to adaptix.
+RUNTIME_USER="${RUNTIME_USER:-adaptix}"
+chown -R "${RUNTIME_USER}:${RUNTIME_USER}" /app/data
+
 if [ ! -f /app/data/server.rsa.crt ] || [ ! -f /app/data/server.rsa.key ]; then
     echo "[*] Generating self-signed certificates..."
     openssl req -x509 -nodes -newkey rsa:2048 \
@@ -55,5 +61,9 @@ if [ ! -f /app/data/profile.yaml ]; then
     echo "[+] Teamserver password: ${ADAPTIX_TEAMSERVER_PASSWORD}"
 fi
 
-echo "[+] Launching Adaptix Server..."
-exec "$@"
+# Cert + profile + credentials.txt were written by root above; fix ownership
+# before dropping privileges so the unprivileged server can read/rewrite them.
+chown -R "${RUNTIME_USER}:${RUNTIME_USER}" /app/data
+
+echo "[+] Launching Adaptix Server as ${RUNTIME_USER}..."
+exec gosu "${RUNTIME_USER}" "$@"

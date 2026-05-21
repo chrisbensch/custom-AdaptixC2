@@ -95,6 +95,8 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 
 9. **Windows client container build:** `docker/Dockerfile.windows-client` installs MSYS2 inside a Windows Server Core container and builds the same MinGW64 Qt client without mutating the host. `scripts/build-client-windows-container.ps1` can call Docker Desktop's local `DockerCli.exe -SwitchWindowsEngine` when requested, but the engine switch is global and temporarily disables Linux-container workflows.
 
+10. **Runtime privilege reduction:** the server runs as an unprivileged `adaptix` user (UID/GID 10001) inside the container, with a read-only rootfs, a small `tmpfs` for `/tmp`, `cap_drop:[ALL]` + `cap_add:[CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, and `security_opt:no-new-privileges`. The entrypoint stays root only long enough to chown the bind mount + render the profile, then `exec gosu`s to UID 10001. `setcap cap_net_bind_service=+ep` on the server binary preserves the one cap operator listeners need (`:80`/`:443`/`:53`) across the gosu UID drop — every other cap stays dropped. CI smoke-tests the same posture (§12.1).
+
 ## 5. Files added by this workspace
 
 ### 5.1 `/Dockerfile` (server image)
@@ -114,13 +116,15 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
   5. `make -C /src/AdaptixC2 server-ext` — builds adaptixserver + all 9 extender plugins (Adaptix's Makefile `EXTENDER_DIRS := $(shell find AdaptixServer/extenders -maxdepth 1 -type d ...)` auto-discovers Kharon's two new extenders, no Makefile edit needed).
   6. `make -C /src/AdaptixC2/AdaptixServer/extenders/agent_kharon agent` — explicit second-pass compile of the PIC beacon under `src_beacon/`; re-stages the artifacts into the *source* dist/ directory.
   7. `cp -r /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist/. /src/AdaptixC2/dist/extenders/agent_kharon/` — copies the second-pass artifacts back over the first-pass layout so the runtime image ships the beacon binaries alongside the plugin .so. The two-pass reconciliation is **intentional** (see in-Dockerfile comment) — do not collapse it without verifying the beacon ships.
-- `runtime` — minimal `debian:bookworm-slim` with `ca-certificates openssl curl` (`curl` is for the HEALTHCHECK). COPYs:
+- `runtime` — minimal `debian:bookworm-slim` with `ca-certificates openssl curl gosu libcap2-bin` (`curl` for HEALTHCHECK, `gosu` for the entrypoint's privilege drop, `libcap2-bin` for the one-shot `setcap`). Creates a system user `adaptix` (UID/GID 10001, `--no-create-home`, `--shell /usr/sbin/nologin`) under which the server will eventually run. COPYs:
   - `/src/AdaptixC2/dist/` → `/app/` (server, ssl_gen.sh, 404page.html, all 9 extenders)
   - `/src/Extension-Kit` → `/app/Extension-Kit`
   - `/src/PostEx-Arsenal` → `/app/PostEx-Arsenal`
   - workspace `profile.kharon.yaml` → `/app/profile.yaml.tmpl` (template, rendered at first start)
   - `Kharon/listener_kharon_http/profiles/template.json` → `/app/kharon-template.json`
   - workspace `docker/entrypoint.sh` → `/app/entrypoint.sh` (see §5.7; replaces the previous inline-generated entrypoint)
+  - Then `setcap cap_net_bind_service=+ep /app/adaptixserver`. Required because gosu's `setuid(0 → 10001)` clears process capabilities; execve re-derives them from file caps, so the binary needs its own `+ep` entry for any listener that wants `:80`/`:443`/`:53`. Everything else stays dropped. The cap is only effective when the container's bounding set includes `NET_BIND_SERVICE` (set in compose, §5.2).
+  - `/app` itself is left root-owned + world-readable. Even if the rootfs becomes writable later, `adaptix` cannot modify `/app/adaptixserver`.
 - `EXPOSE 4321` only (4321 is the teamserver; was previously `4321 80 443 8080 8443`, but under `network_mode: host` EXPOSE is a no-op anyway, and beacon listener ports are operator-defined at runtime so they're not knowable at image-build time — listing 80/443/etc. was misleading).
 - `HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD curl -sk --max-time 5 -o /dev/null https://127.0.0.1:4321/endpoint || exit 1` — confirms TLS handshake + HTTP layer up. `/endpoint` is a WebSocket upgrade and won't 2xx on a plain GET, so the check intentionally omits `-f`; non-zero exit only on connect/TLS/timeout failure. CI (§12) uses this signal as its smoke-test gate.
 - `ENTRYPOINT ["/app/entrypoint.sh"]`. `CMD ["/app/adaptixserver", "-profile", "/app/data/profile.yaml"]` — the profile path lives under `/app/data` (the bind-mounted volume) where the entrypoint renders it on first start.
@@ -150,6 +154,16 @@ services:
     image: adaptixc2-omni:latest
     container_name: adaptixc2-omni-server
     network_mode: host
+    read_only: true                            # rootfs read-only; only /app/data + /tmp are writable
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    cap_drop: [ALL]
+    cap_add:
+      - CHOWN                                  # entrypoint normalises /app/data ownership
+      - SETUID                                 # gosu drops privileges before exec
+      - SETGID                                 #  "
+      - NET_BIND_SERVICE                       # listeners bind :80 / :443 / :53
+    security_opt: ["no-new-privileges:true"]
     volumes:
       # The runtime profile (./data/profile.yaml) is rendered by the entrypoint
       # on first start. Edit it there and `restart` to apply changes.
@@ -187,6 +201,14 @@ services:
 Defaults reproduce the original amd64 path (no env vars, no patch effect on the upstream stage), so existing workflows are unaffected.
 
 **Change from earlier revisions:** the `server` service no longer bind-mounts `./profile.kharon.yaml:/app/profile.yaml:ro`. The host file is now the **template** baked into the image at build time; the **rendered** profile lives under `./data/profile.yaml` (managed by the entrypoint, §5.7). Editing the workspace `profile.kharon.yaml` after first start has no effect on a running container — edit `./data/profile.yaml` and `docker compose --profile runtime restart`, or `rm ./data/profile.yaml` and re-launch with `ADAPTIX_*` env vars to re-render from the template.
+
+**Runtime hardening posture.** The four `cap_add` entries are the minimal set that keeps the image working:
+
+- `CHOWN` — entrypoint runs `chown -R adaptix:adaptix /app/data` (the bind mount comes in with the host directory's ownership; without this cap, container root can't normalise it).
+- `SETUID` + `SETGID` — `gosu adaptix "$@"` performs `setresuid`/`setresgid` to UID/GID 10001 before exec; both caps are required.
+- `NET_BIND_SERVICE` — operator listeners commonly want `:80` / `:443` / `:53`. The cap is granted to the container's bounding set here and to the binary via `setcap cap_net_bind_service=+ep` in the Dockerfile; the file cap survives the UID drop because execve re-derives caps from file caps.
+
+`read_only: true` is feasible because every server write target (SQLite DB, listener metadata, downloads, uploads, screenshots, cert/key, profile, credentials.txt) lives under `/app/data` — verified against `AdaptixC2/AdaptixServer/core/utils/logs/repo.go` (`DataPath`/`DbPath`/`ListenerPath`/`DownloadPath`/`UploadPath`/`ScreenshotPath` all derive from `os.Getwd() + "/data"`, and the CMD launches with cwd `/app`). The Go runtime occasionally wants `/tmp`, so a 64 MiB `tmpfs` covers that without granting writable rootfs. `no-new-privileges:true` prevents any setuid binaries (including ones an attacker might drop into `/tmp`) from re-escalating after the gosu drop.
 
 ### 5.3 `profile.kharon.yaml`
 
@@ -276,21 +298,25 @@ Excludes `**/.git`, `**/.gitmodules`, build outputs, and `.claude/` from every `
 
 ### 5.7 `docker/entrypoint.sh`
 
-First-start bootstrap for the runtime image. Replaces the previous inline-generated cert-only entrypoint with a file COPYed into the image at build time. 59 lines; full file at `./docker/entrypoint.sh`.
+First-start bootstrap for the runtime image. Replaces the previous inline-generated cert-only entrypoint with a file COPYed into the image at build time. ~70 lines; full file at `./docker/entrypoint.sh`.
 
-Behavior:
+Behavior — runs as root so it can take care of the bind-mount + cert + profile work, then drops to `adaptix` before exec'ing the server:
 
-1. **TLS certs** — if `/app/data/server.rsa.crt` or `.key` is missing, generate a 2048-bit self-signed pair with `openssl req -x509 -nodes` (subject `/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost`, 10-year validity), `chmod 600` the key.
-2. **Profile rendering** — if `/app/data/profile.yaml` is missing:
+1. **Normalise `/app/data` ownership** — `chown -R adaptix:adaptix /app/data`. The bind mount comes in with whatever ownership the host directory carried, which may not match the unprivileged runtime UID. Idempotent; requires `CAP_CHOWN` in the container's bounding set (§5.2).
+2. **TLS certs** — if `/app/data/server.rsa.crt` or `.key` is missing, generate a 2048-bit self-signed pair with `openssl req -x509 -nodes` (subject `/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost`, 10-year validity), `chmod 600` the key.
+3. **Profile rendering** — if `/app/data/profile.yaml` is missing:
    - Resolve `ADAPTIX_TEAMSERVER_PASSWORD` (default: `openssl rand -hex 24`).
    - Resolve `ADAPTIX_OPERATORS` (default: `operator1:<openssl rand -hex 16>`). Format: comma-separated `user:pass` pairs.
    - Expand the operators env var into a YAML block (`    name: "pass"` lines) in a temp file.
    - `sed` the template `/app/profile.yaml.tmpl` → `/app/data/profile.yaml`, substituting `__ADAPTIX_TEAMSERVER_PASSWORD__` and inserting the operators block in place of `__ADAPTIX_OPERATORS_BLOCK__`.
    - `chmod 600` the rendered profile.
    - Append the resolved password and operator string to `/app/data/credentials.txt` (also `0600`) and echo the password to the container log so `docker compose logs` captures it on first start.
-3. **Exec** — `exec "$@"` invokes the CMD (`/app/adaptixserver -profile /app/data/profile.yaml`).
+4. **Re-chown** — `chown -R adaptix:adaptix /app/data` once more so any files written in step 2/3 above (created as root) belong to the unprivileged runtime user before privilege drop.
+5. **Drop privileges and exec** — `exec gosu adaptix "$@"` invokes the CMD (`/app/adaptixserver -profile /app/data/profile.yaml`) as UID 10001. The setuid clears process caps; `setcap cap_net_bind_service=+ep` on the binary (§5.1) restores that one cap on execve so listeners can still bind low ports.
 
-Subsequent starts skip both blocks: the cert + profile + credentials file already exist. Rotation flow: edit `data/profile.yaml` and restart, or `rm data/profile.yaml` and re-launch with the env vars set.
+Subsequent starts skip the cert + profile + credentials blocks (files already exist) but still re-chown `/app/data` and drop privileges, so the steady-state behavior is identical regardless of how many times the container is restarted. Rotation flow: edit `data/profile.yaml` and restart, or `rm data/profile.yaml` and re-launch with the env vars set.
+
+`RUNTIME_USER` (default `adaptix`) can override the drop target if you've baked a different user into a downstream image; the env var feeds both the `chown` and the final `gosu` call.
 
 Why this lives in a separate file (vs. heredoc in the Dockerfile): the script grew enough logic (sed-based templating, IFS handling, persistence) that an inline heredoc would be hard to review and test. Keeping it at `docker/entrypoint.sh` means `shellcheck`-able, diff-able, and editable without rebuilding the image to inspect it.
 
@@ -789,7 +815,7 @@ Per job, the steps are:
 1. **Checkout** with `submodules: recursive` (so all four pinned upstream repos are present).
 2. **`docker/setup-buildx-action@v3`** — registers the buildx builder.
 3. **Build** — `docker compose --profile build build`. Host-arch, just like a local build.
-4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, and `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`. Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. On failure, dumps `docker logs` for diagnosis.
+4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`, and the same hardened posture compose enforces in §5.2 (`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL` + the four cap-adds, `--security-opt no-new-privileges:true`). Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. Once healthy, assert PID 1 in the container is running as UID 10001 (`adaptix`) by reading `/proc/1/status` via `docker exec` — catches a dropped `exec gosu` in the entrypoint. On failure, dumps `docker logs` for diagnosis.
 5. **Teardown** — `docker rm -f` the smoke container in an `if: always()` step so the runner is clean for the next job.
 
 Total wall time: roughly 12–18 minutes per arch (the build dominates; the smoke test is sub-90s once the image is up).
