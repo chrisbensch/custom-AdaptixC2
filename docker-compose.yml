@@ -41,6 +41,20 @@ services:
       - NET_BIND_SERVICE   # operator listeners often want :80 / :443 / :53
     security_opt:
       - no-new-privileges:true
+    # Resource bounds — defaults sized for a generic VPS. Tune for your host:
+    # mem_limit caps RSS so a runaway plugin can't OOM the host; pids_limit
+    # catches fork-bomb-style misbehavior (the server itself uses well under
+    # 100 threads under normal load). Override via env vars without editing
+    # the file: e.g. `ADAPTIX_MEM_LIMIT=2g docker compose --profile runtime up`.
+    mem_limit: ${ADAPTIX_MEM_LIMIT:-4g}
+    pids_limit: ${ADAPTIX_PIDS_LIMIT:-4096}
+    # Bound docker's JSON log so a misbehaving listener (or a noisy upstream
+    # log line) can't fill the host disk. 30m total retention with rotation.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       # The runtime profile (./data/profile.yaml) is rendered by the entrypoint
       # on first start. Edit it there and `restart` to apply changes.

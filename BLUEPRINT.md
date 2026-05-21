@@ -164,6 +164,11 @@ services:
       - SETGID                                 #  "
       - NET_BIND_SERVICE                       # listeners bind :80 / :443 / :53
     security_opt: ["no-new-privileges:true"]
+    mem_limit: ${ADAPTIX_MEM_LIMIT:-4g}           # cap RSS; runaway plugins can't OOM the host
+    pids_limit: ${ADAPTIX_PIDS_LIMIT:-4096}       # catch fork-bomb-style misbehavior
+    logging:                                     # bound docker JSON log growth (30m total)
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     volumes:
       # The runtime profile (./data/profile.yaml) is rendered by the entrypoint
       # on first start. Edit it there and `restart` to apply changes.
@@ -209,6 +214,8 @@ Defaults reproduce the original amd64 path (no env vars, no patch effect on the 
 - `NET_BIND_SERVICE` — operator listeners commonly want `:80` / `:443` / `:53`. The cap is granted to the container's bounding set here and to the binary via `setcap cap_net_bind_service=+ep` in the Dockerfile; the file cap survives the UID drop because execve re-derives caps from file caps.
 
 `read_only: true` is feasible because every server write target (SQLite DB, listener metadata, downloads, uploads, screenshots, cert/key, profile, credentials.txt) lives under `/app/data` — verified against `AdaptixC2/AdaptixServer/core/utils/logs/repo.go` (`DataPath`/`DbPath`/`ListenerPath`/`DownloadPath`/`UploadPath`/`ScreenshotPath` all derive from `os.Getwd() + "/data"`, and the CMD launches with cwd `/app`). The Go runtime occasionally wants `/tmp`, so a 64 MiB `tmpfs` covers that without granting writable rootfs. `no-new-privileges:true` prevents any setuid binaries (including ones an attacker might drop into `/tmp`) from re-escalating after the gosu drop.
+
+**Resource bounds.** `mem_limit` (default 4 GiB), `pids_limit` (default 4096), and `logging.options.max-size`/`max-file` (10 MB × 3 files) keep the container from taking down the host in pathological scenarios — runaway plugin allocation, fork-bomb, or a noisy upstream log line that fills the disk. The mem and pid limits are env-var overridable (`ADAPTIX_MEM_LIMIT`, `ADAPTIX_PIDS_LIMIT`) so operators on small VPSes can dial them down without editing the file. None of these are security boundaries on their own — they're operational floors that prevent collateral damage.
 
 ### 5.3 `profile.kharon.yaml`
 
