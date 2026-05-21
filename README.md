@@ -81,6 +81,16 @@ docker compose --profile runtime up -d
 
 The rendered profile lives at `./data/profile.yaml` and is reused on subsequent starts. To rotate credentials or change other settings, edit that file and run `docker compose --profile runtime restart`. The committed [`profile.kharon.yaml`](./profile.kharon.yaml) is the *template* used at first render; editing it after first start has no effect — delete `./data/profile.yaml` and restart to re-render from the template.
 
+The TLS cert generated on first start is ECDSA P-256, 365-day validity, with `subjectAltName=DNS:localhost,IP:127.0.0.1`. For a real deployment, override before the first `up`:
+
+```bash
+export ADAPTIX_TLS_SAN='DNS:c2.example.com,IP:10.0.0.5'   # openssl SAN format
+export ADAPTIX_TLS_SUBJECT='/CN=c2.example.com'           # optional; overrides issuer DN
+docker compose --profile runtime up -d
+```
+
+To rotate the cert later, `rm ./data/server.rsa.crt ./data/server.rsa.key` and restart (env vars get re-read). The `.rsa.` in the filenames is historical — the cert is ECDSA.
+
 The server runs as an unprivileged user (UID/GID 10001, `adaptix`) inside the container with a read-only rootfs, only the four capabilities it actually needs (`CHOWN`, `SETUID`, `SETGID`, `NET_BIND_SERVICE`), and `no-new-privileges`. Files written by the entrypoint into `./data/` end up owned by UID 10001 on the host — if you need to read them as your shell user, `sudo chown -R "$USER" ./data` or just `sudo cat ./data/credentials.txt`.
 
 ### 3. Build a client

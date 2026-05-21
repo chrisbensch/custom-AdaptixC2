@@ -30,11 +30,29 @@ chown root:root /app/data
 
 if [ ! -f /app/data/server.rsa.crt ] || [ ! -f /app/data/server.rsa.key ]; then
     echo "[*] Generating self-signed certificates..."
-    openssl req -x509 -nodes -newkey rsa:2048 \
+    # ECDSA P-256: ~3072-bit-RSA security level at 256-bit key size, faster
+    # handshakes than RSA 2048. The `.rsa.` in the filenames is historical —
+    # upstream picked it before there was an alternative — and is kept so the
+    # profile template doesn't have to be rewritten.
+    #
+    # 365-day validity replaces the previous 3650 (10-year) default. A long-
+    # lived self-signed cert sitting on a public-facing C2 is a liability;
+    # operators wanting longer should drop in their own cert or extend by
+    # editing this script.
+    #
+    # subjectAltName is required by every modern TLS client (CN matching is
+    # deprecated). Defaults to loopback so the HEALTHCHECK keeps working
+    # without configuration. Override with ADAPTIX_TLS_SAN for a real
+    # hostname/IP — format is openssl's, e.g. "DNS:c2.example.com,IP:10.0.0.5".
+    # ADAPTIX_TLS_SUBJECT overrides the issuer DN.
+    openssl req -x509 -nodes \
+        -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
         -keyout /app/data/server.rsa.key -out /app/data/server.rsa.crt \
-        -days 3650 -subj "/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost"
+        -days 365 \
+        -subj "${ADAPTIX_TLS_SUBJECT:-/C=US/ST=State/L=City/O=AdaptixC2/CN=localhost}" \
+        -addext "subjectAltName=${ADAPTIX_TLS_SAN:-DNS:localhost,IP:127.0.0.1}"
     chmod 600 /app/data/server.rsa.key
-    echo "[+] Certificates generated"
+    echo "[+] Certificates generated (ECDSA P-256, 365-day validity)"
 fi
 
 if [ ! -f /app/data/profile.yaml ]; then
