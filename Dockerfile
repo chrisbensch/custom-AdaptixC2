@@ -12,7 +12,9 @@
 # ============================================
 # Stage: base — toolchains for every component
 # ============================================
-FROM golang:1.25.4-bookworm AS base
+# Pinned by digest, not just tag. Tags are mutable; digests aren't. Bump alongside
+# the version when refreshing — see BLUEPRINT.md §3 for the lookup procedure.
+FROM golang:1.25.4-bookworm@sha256:e17419604b6d1f9bc245694425f0ec9b1b53685c80850900a376fb10cb0f70cb AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOEXPERIMENT=jsonv2,greenteagc
@@ -122,7 +124,8 @@ RUN if [ -d /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist ]; then \
 # ============================================
 # Stage: runtime — minimal server image
 # ============================================
-FROM debian:bookworm-slim AS runtime
+# Pinned by digest. Same rationale as the base stage above; bump on refresh.
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 

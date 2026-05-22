@@ -64,6 +64,34 @@ jobs:
               docker exec omni-smoke ps -o user,uid,pid,cmd -ax || true
               exit 1
           fi
+      - name: Vulnerability scan (Trivy)
+        # Fail the build on any CRITICAL or HIGH severity CVE that has a fix
+        # available. `ignore-unfixed` excludes Debian unfix-yet packages so CI
+        # only blocks on things we can actually act on (bump base image digest
+        # or apt package). Runs after the smoke test so a healthy image gets
+        # scanned; if smoke fails the image isn't worth scanning anyway.
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'adaptixc2-omni:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          vuln-type: 'os,library'
+      - name: Generate SBOM (Trivy, CycloneDX)
+        # Per-arch artifact uploaded below. Audit/compliance use; not consumed
+        # by anything in CI today.
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: 'adaptixc2-omni:latest'
+          format: 'cyclonedx'
+          output: 'sbom-${{ matrix.runner }}.cyclonedx.json'
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.runner }}
+          path: sbom-${{ matrix.runner }}.cyclonedx.json
+          retention-days: 30
       - name: Tear down
         if: always()
         run: docker rm -f omni-smoke 2>/dev/null || true
