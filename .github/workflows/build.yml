@@ -64,6 +64,22 @@ jobs:
               docker exec omni-smoke ps -o user,uid,pid,cmd -ax || true
               exit 1
           fi
+          # Fingerprint-reduction assertion: the 404 page and the rendered profile
+          # must not contain framework-identifying strings. Catches regressions
+          # like a missed COPY override or a profile template revert.
+          if docker exec omni-smoke grep -q AdaptixC2 /app/404page.html; then
+              echo "::error::/app/404page.html still contains 'AdaptixC2' — Dockerfile COPY override missing?"
+              docker exec omni-smoke cat /app/404page.html
+              exit 1
+          fi
+          if docker exec omni-smoke grep -qE '^[[:space:]]*Server:[[:space:]]*"AdaptixC2"' /app/data/profile.yaml; then
+              echo "::error::/app/data/profile.yaml still advertises Server: AdaptixC2"
+              exit 1
+          fi
+          if docker exec omni-smoke grep -q '^[[:space:]]*Adaptix-Version:' /app/data/profile.yaml; then
+              echo "::error::/app/data/profile.yaml still includes the Adaptix-Version fingerprint header"
+              exit 1
+          fi
       - name: Vulnerability scan (Trivy)
         # Fail the build on any CRITICAL or HIGH severity CVE that has a fix
         # available. `ignore-unfixed` excludes Debian unfix-yet packages so CI
