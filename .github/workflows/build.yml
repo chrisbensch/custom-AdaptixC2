@@ -70,7 +70,7 @@ jobs:
         # only blocks on things we can actually act on (bump base image digest
         # or apt package). Runs after the smoke test so a healthy image gets
         # scanned; if smoke fails the image isn't worth scanning anyway.
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'adaptixc2-omni:latest'
           format: 'table'
@@ -81,7 +81,7 @@ jobs:
       - name: Generate SBOM (Trivy, CycloneDX)
         # Per-arch artifact uploaded below. Audit/compliance use; not consumed
         # by anything in CI today.
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'adaptixc2-omni:latest'
           format: 'cyclonedx'
