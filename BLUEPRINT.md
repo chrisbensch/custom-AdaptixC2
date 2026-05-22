@@ -119,6 +119,7 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
   7. `cp -r /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist/. /src/AdaptixC2/dist/extenders/agent_kharon/` — copies the second-pass artifacts back over the first-pass layout so the runtime image ships the beacon binaries alongside the plugin .so. The two-pass reconciliation is **intentional** (see in-Dockerfile comment) — do not collapse it without verifying the beacon ships.
 - `runtime` — minimal `debian:bookworm-slim` (pinned by manifest-list digest) with `apt-get upgrade -y` to pick up Debian security patches that were issued after the pinned base was published, then `apt-get install -y --no-install-recommends ca-certificates openssl curl gosu libcap2-bin` (`curl` for HEALTHCHECK, `gosu` for the entrypoint's privilege drop, `libcap2-bin` for the one-shot `setcap`). The digest-pin-plus-upgrade pairing means the *starting point* is reproducible but security patches available on build day flow through; Trivy in CI tells us when a patch is missing. Creates a system user `adaptix` (UID/GID 10001, `--no-create-home`, `--shell /usr/sbin/nologin`) under which the server will eventually run. COPYs:
   - `/src/AdaptixC2/dist/` → `/app/` (server, ssl_gen.sh, 404page.html, all 9 extenders)
+  - workspace `docker/404page.html` → `/app/404page.html` (**overrides upstream's framework-fingerprint 404 with an nginx-default-shaped page; see §5.9**)
   - `/src/Extension-Kit` → `/app/Extension-Kit`
   - `/src/PostEx-Arsenal` → `/app/PostEx-Arsenal`
   - workspace `profile.kharon.yaml` → `/app/profile.yaml.tmpl` (template, rendered at first start)
@@ -259,15 +260,22 @@ A **template**, not a finished profile. Diffed against `AdaptixC2/AdaptixServer/
        - "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
 -      - "TLS_RSA_WITH_AES_128_GCM_SHA256"
 -      - "TLS_RSA_WITH_AES_256_GCM_SHA384"
+ HttpServer:
+   error:
+     headers:
+-      Server: "AdaptixC2"
+-      Adaptix-Version: "v1.2"
++      Server: "nginx"
 ```
 
-Five categories of change:
+Six categories of change:
 
 1. **Teamserver password** is a placeholder (`__ADAPTIX_TEAMSERVER_PASSWORD__`) rendered by the entrypoint (§5.7) from `$ADAPTIX_TEAMSERVER_PASSWORD` or a random `openssl rand -hex 24`.
 2. **Operators block** is a single placeholder line (`__ADAPTIX_OPERATORS_BLOCK__`) the entrypoint expands into a YAML mapping from `$ADAPTIX_OPERATORS` (comma-separated `user:pass` pairs) or a single random `operator1:<random>` default. The previous hard-coded `operator1: pass1` / `operator2: pass2` defaults are gone — there is no longer a passwords-in-public-repo failure mode.
 3. **Cert + key paths** point at `/app/data/server.rsa.crt` and `/app/data/server.rsa.key` (the bind-mounted volume), where the entrypoint generates them on first start. Upstream pointed at relative paths against the CWD; we made them absolute so the rendered profile is unambiguous regardless of where the binary is invoked from.
 4. **Extenders + axscripts** — the same two additions and one un-commenting that were always here. Order matters for UX (Kharon entries last).
 5. **TLS cipher suites** — `TLS_RSA_WITH_AES_*` (no forward secrecy) removed. ECDHE suites only. This is a hardening choice, not an upstream defect; upstream may add them back, in which case keep them removed when re-merging.
+6. **404 fingerprint headers** — `Server: AdaptixC2` rewritten to `Server: nginx` (defensive decoy) and `Adaptix-Version: v1.2` removed entirely (no defensive value to broadcasting the framework version). Pairs with the workspace `docker/404page.html` (§5.9) which replaces upstream's `<h1>AdaptixC2 404</h1>` body with an nginx-default-shaped page. Operators wanting a different decoy edit the rendered `data/profile.yaml` after first start.
 
 These paths resolve relative to `/app/` (server's CWD inside the container), which is exactly where `/app/Extension-Kit/` and `/app/PostEx-Arsenal/` are placed by the runtime stage. AxScript's `ax.script_dir()` resolves to the directory of the loaded `.axs` file — so `kh_modules.axs` finds `bofs/dist/*.x64.o` at `/app/PostEx-Arsenal/bofs/dist/*.x64.o`, and `extension-kit.axs` finds the per-subdir scripts.
 
@@ -350,6 +358,26 @@ Key behavior:
 3. Builds image tag `adaptixc2-omni-client-windows:latest` by default.
 4. Creates a temporary extraction container and `docker cp`s `C:\client-dist` to `AdaptixClient-dist\windows`.
 5. The Dockerfile uses wildcard ICU DLL globs (`libicuin*.dll`, `libicuuc*.dll`, `libicudt*.dll`) to avoid the upstream `build.bat` version-number gotcha.
+
+### 5.9 `docker/404page.html`
+
+Defensive replacement for `AdaptixC2/AdaptixServer/404page.html`. The upstream page is a styled dark-mode card with `<h1>AdaptixC2 404</h1>` and copy that reads "*You need to enter the correct connection details.*" — both of which are passive-enumeration tells (the framework name in the heading, the suspicious phrasing in the body).
+
+The workspace version mimics nginx's stock 404 instead:
+
+```html
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+```
+
+Wired in via a Dockerfile `COPY docker/404page.html /app/404page.html` that runs **after** the `COPY --from=build-server /src/AdaptixC2/dist/ /app/` step, so it overrides the upstream file at image-build time. Pairs with the `Server: nginx` header in `profile.kharon.yaml` (§5.3) — the page body and the header decoy as the same software, so a passive scan can't catch a mismatch.
+
+Operators wanting an engagement-specific decoy can either edit this file before building (the changed COPY layer rebuilds quickly), or layer a `RUN` over the final image, or replace `/app/404page.html` at runtime via a tmpfs/volume mount.
 
 ## 6. Patches to upstream subrepos
 
@@ -827,7 +855,7 @@ Per job, the steps are:
 1. **Checkout** with `submodules: recursive` (so all four pinned upstream repos are present).
 2. **`docker/setup-buildx-action@v3`** — registers the buildx builder.
 3. **Build** — `docker compose --profile build build`. Host-arch, just like a local build.
-4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`, and the same hardened posture compose enforces in §5.2 (`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL` + the four cap-adds, `--security-opt no-new-privileges:true`). Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. Once healthy, assert PID 1 in the container is running as UID 10001 (`adaptix`) by reading `/proc/1/status` via `docker exec` — catches a dropped `exec gosu` in the entrypoint. On failure, dumps `docker logs` for diagnosis.
+4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`, and the same hardened posture compose enforces in §5.2 (`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL` + the four cap-adds, `--security-opt no-new-privileges:true`). Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. Once healthy, assert PID 1 in the container is running as UID 10001 (`adaptix`) by reading `/proc/1/status` via `docker exec` — catches a dropped `exec gosu` in the entrypoint — and that `/app/404page.html` + the rendered `/app/data/profile.yaml` don't carry framework-identifying strings (no `AdaptixC2` in the 404 body, no `Server: "AdaptixC2"` or `Adaptix-Version:` headers in the profile). Catches a missed Dockerfile COPY override or a profile-template revert. On failure, dumps `docker logs` for diagnosis.
 5. **Vulnerability scan (Trivy)** — `aquasecurity/trivy-action@v0.36.0` scans `adaptixc2-omni:latest` for OS + library CVEs. Fails on `CRITICAL` or `HIGH` severity with `ignore-unfixed: true` — we only block on things we can act on (bump base-image digest, bump apt package). Runs after smoke so we don't scan a broken image.
 6. **SBOM generation** — `trivy-action` again, this time with `format: cyclonedx` and `output: sbom-${{ matrix.runner }}.cyclonedx.json`.
 7. **Upload SBOM** — `actions/upload-artifact@v4` attaches the per-arch SBOM to the workflow run (`sbom-ubuntu-latest` / `sbom-ubuntu-24.04-arm`, 30-day retention). Not consumed by anything in CI today; available for audit/compliance use.

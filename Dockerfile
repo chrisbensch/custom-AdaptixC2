@@ -159,6 +159,13 @@ WORKDIR /app
 # Server binary + default extenders + Kharon extenders + ssl_gen.sh + 404page.html.
 COPY --from=build-server /src/AdaptixC2/dist/ /app/
 
+# Defensive 404 page: upstream's `<h1>AdaptixC2 404</h1>` ships an obvious
+# framework fingerprint. Overwrite with an nginx-default-shaped page so it
+# pairs with the `Server: nginx` header in profile.kharon.yaml. Operators
+# wanting an engagement-specific decoy can edit /app/404page.html via a
+# layered image, or replace the page after first start via a volume mount.
+COPY docker/404page.html /app/404page.html
+
 # Built BOFs and AxScript bundles. Paths mirror the layout the .axs files expect:
 # kh_modules.axs uses ax.script_dir() + "bofs/dist/<name>.<arch>.o"
 # extension-kit.axs uses ax.script_dir() + "<Subdir>/<name>.axs"

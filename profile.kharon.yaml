@@ -29,8 +29,12 @@ HttpServer:
     status: 404
     headers:
       Content-Type: "text/html; charset=UTF-8"
-      Server: "AdaptixC2"
-      Adaptix-Version: "v1.2"
+      # Defensive default: present as nginx rather than advertising the C2
+      # framework. The Adaptix-Version header upstream ships is stripped
+      # entirely — no defensive value to broadcasting a version. Operators
+      # who want a different decoy (Apache, IIS, etc.) can edit this in the
+      # rendered data/profile.yaml after first start.
+      Server: "nginx"
     page: "404page.html"
   http:
     max_header_bytes: 8192
