@@ -177,7 +177,7 @@ make clean
 
 ## Cross-cutting conventions
 
-- **Go version pin: 1.25.4** with `GOEXPERIMENT=jsonv2,greenteagc`. The pre-install script wipes `/usr/local/go` and reinstalls — be aware on shared machines.
+- **Go version pin.** Two paths diverge intentionally: the **Docker pipeline** uses `golang:1.25.10-bookworm@sha256:154bd70…` (bumped reactively when Trivy in CI flags a Go-stdlib CVE); the **upstream native installer** `pre_install_linux_all.sh` still pins **1.25.4**. Within 1.25.x is in-policy per BLUEPRINT §3 — bump the Docker pin when CI tells you to. `GOEXPERIMENT=jsonv2,greenteagc` for both paths. The native installer wipes `/usr/local/go` and reinstalls — be aware on shared machines.
 - **Cross-compilation only (server artifacts).** All Windows C++ payloads (beacon, Gopher agent, BOFs) are cross-compiled on Linux/macOS via mingw-w64 (`x86_64-w64-mingw32-*`, `i686-w64-mingw32-*`). There is no MSVC build path for these. Exception: the **Windows GUI client** (`AdaptixClient`) is built natively on a Windows machine using MSYS2 + MinGW64 — see `BLUEPRINT.md` §11 and `scripts/install-prereqs-windows.ps1`.
 - **Plugin contract = `axc2` package.** Don't reach into teamserver internals from an extender; the plugin can only see what the typed `Teamserver` interface in its own `pl_main.go` declares.
 - **`go.work` is authoritative.** Adding/removing an extender requires `go work use` / removing the entry — `setup_kharon.sh` is the reference.
