@@ -14,7 +14,7 @@
 # ============================================
 # Pinned by digest, not just tag. Tags are mutable; digests aren't. Bump alongside
 # the version when refreshing — see BLUEPRINT.md §3 for the lookup procedure.
-FROM golang:1.25.4-bookworm@sha256:e17419604b6d1f9bc245694425f0ec9b1b53685c80850900a376fb10cb0f70cb AS base
+FROM golang:1.25.10-bookworm@sha256:154bd7001b6eb339e88c964442c0ad6ed5e53f09844cc818a41ce4ecb3ce3b43 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOEXPERIMENT=jsonv2,greenteagc
@@ -129,13 +129,22 @@ FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f206
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
         curl \
         gosu \
         libcap2-bin \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# `apt-get upgrade -y` above pulls Debian security updates into the base
+# image's pre-existing packages (e.g. libgnutls30 was at +deb12u6 in the
+# pinned base; +deb12u7 fixes a critical CVE). Pairing the digest pin (for
+# a reproducible starting point) with an upgrade pass (for security patches
+# available on build day) is the Debian convention; Trivy in CI surfaces
+# when a new patch is available and not yet picked up.
 
 # Unprivileged runtime account. The entrypoint stays root long enough to chown
 # the /app/data bind mount and render the profile, then drops to `adaptix` via
