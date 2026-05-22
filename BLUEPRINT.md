@@ -68,14 +68,15 @@ These are the exact commits the integration was designed for. When re-applying a
 
 | What | Version | Why |
 |---|---|---|
-| Go | **1.25.4** (server image base: `golang:1.25-bookworm`) | Matches `AdaptixC2/AdaptixServer/go.mod`. The Adaptix install guide mentions 1.25.8 — newer patch versions are fine, but staying on 1.25.x is required. |
+| Go | **1.25.10** (server image base: `golang:1.25.10-bookworm@sha256:154bd70…`) | Matches `AdaptixC2/AdaptixServer/go.mod` (1.25.x is required). Bumped from 1.25.4 → 1.25.10 to pick up patches for CVE-2025-68121 (TLS session-resumption cert validation, CRITICAL) plus 11 HIGH Go-stdlib CVEs surfaced by the Trivy gate. Newer patch versions within 1.25.x are explicitly fine; bump again when Trivy flags new fixes. Pinned by manifest-list digest (not just tag) for true reproducibility — re-tags of an upstream tag won't silently change our build. |
 | GOEXPERIMENT | `jsonv2,greenteagc` | Required by upstream Makefile / Dockerfile; preserved in the new Dockerfile as an env default. |
 | go-win7 | HEAD of `Adaptix-Framework/go-win7` | Win7-compatible Go runtime needed by Gopher Agent and consumed by Kharon's beacon. Cloned `--depth=1`. |
 | Qt (Linux client AppImage, amd64) | **6.9.2** (via aqtinstall, from upstream AdaptixC2/Dockerfile `build-client` stage) | Reused as-is from upstream. |
 | Qt (Linux client AppImage, arm64) | **6.10.2** (distro packages from `kalilinux/kali-rolling`, via new `build-client-kali` stage added by `patches/adaptixclient-kali-arm64-stage.patch`) | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x; Kali's distro Qt6 fills the gap. API-compatible with 6.9.2. |
 | Qt (macOS client) | Homebrew **qt@6** (currently 6.11.x) | Native arm64; works because of the `if(APPLE)` CMake patch. |
 | Qt (Windows client) | MSYS2 `mingw-w64-x86_64-qt6` | Used by both the native host installer and the Windows-container build. |
-| Debian base (build) | `bookworm` | Matches upstream. |
+| Debian base (runtime) | **`bookworm-slim@sha256:0104b33…`** | Pinned by manifest-list digest. Re-fetch via `docker buildx imagetools inspect debian:bookworm-slim` when bumping; both digests are also queried by Trivy in CI to surface CVEs that would justify a bump. |
+| Debian base (build) | `bookworm` | Matches upstream (inherited via `golang:1.25.10-bookworm`). |
 | Ubuntu base (Linux client amd64) | `22.04` | From upstream AdaptixC2/Dockerfile `build-client` stage. |
 | Kali base (Linux client arm64) | `kalilinux/kali-rolling:latest` | Provides arm64 Qt 6.10.2; tracked as a rolling distro since this is the only Qt-6.9+ aarch64 source we have. |
 | Windows base (Windows client container) | `mcr.microsoft.com/windows/servercore:ltsc2022` | Installs MSYS2 inside the container and produces a deployed Windows client without host toolchain installs. Must run under Docker Desktop Windows container mode. |
@@ -91,7 +92,7 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 5. **macOS arch:** Apple Silicon **arm64 only** (no universal binary).
 6. **Linux AppImage delivery:** add a `client-linux` service to the workspace-root `docker-compose.yml`. For amd64 it points at `AdaptixC2/Dockerfile`'s upstream `build-client` stage (Qt 6.9.2 via aqtinstall, ubuntu:22.04). For arm64 it points at a new `build-client-kali` stage added via `patches/adaptixclient-kali-arm64-stage.patch` (Qt 6.10.2 via distro packages on kali-rolling) — aqtinstall publishes no aarch64 Qt binaries. Target swap is driven by `ADAPTIX_CLIENT_TARGET`; defaults preserve the original amd64 path.
 7. **TLS cipher policy:** ECDHE-only suites in `profile.kharon.yaml`. The legacy `TLS_RSA_WITH_AES_*_GCM_*` suites (no forward secrecy) that upstream ships were dropped to enforce PFS.
-8. **Upstream version pinning at build time:** `golang:1.25.4-bookworm` (specific patch, not the floating `1.25`) and `go-win7` pinned via `ARG GO_WIN7_SHA` (currently `15ad42b…`). Bumping is a one-line ARG edit; reproducibility is a first-class requirement.
+8. **Upstream version pinning at build time:** `golang:1.25.10-bookworm` (specific patch, not the floating `1.25`) and `go-win7` pinned via `ARG GO_WIN7_SHA` (currently `15ad42b…`). Bumping is a one-line ARG edit; reproducibility is a first-class requirement. The Go patch version is bumped reactively when Trivy in CI flags a fixed CVE.
 
 9. **Windows client container build:** `docker/Dockerfile.windows-client` installs MSYS2 inside a Windows Server Core container and builds the same MinGW64 Qt client without mutating the host. `scripts/build-client-windows-container.ps1` can call Docker Desktop's local `DockerCli.exe -SwitchWindowsEngine` when requested, but the engine switch is global and temporarily disables Linux-container workflows.
 
@@ -103,7 +104,7 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 
 Multi-stage; build context = workspace root; **builds for the host architecture** (no `--platform` pin on `FROM` lines). Pass `--platform=linux/amd64` to docker build (or set `DOCKER_DEFAULT_PLATFORM`) to force a specific arch — verified working on both arm64 and amd64.
 
-- `base` — `golang:1.25.4-bookworm` (pinned patch version) with `mingw-w64 g++-mingw-w64 gcc g++ make build-essential libssl-dev zlib1g-dev nasm clang llvm python3 git wget ca-certificates`. Clones `Adaptix-Framework/go-win7` into `/usr/lib/go-win7` and `git checkout`s the SHA in `ARG GO_WIN7_SHA` (currently `15ad42b…`) before symlinking runtime headers. Sets `GOEXPERIMENT=jsonv2,greenteagc`.
+- `base` — `golang:1.25.10-bookworm` (pinned patch version, by manifest-list digest) with `mingw-w64 g++-mingw-w64 gcc g++ make build-essential libssl-dev zlib1g-dev nasm clang llvm python3 git wget ca-certificates`. Clones `Adaptix-Framework/go-win7` into `/usr/lib/go-win7` and `git checkout`s the SHA in `ARG GO_WIN7_SHA` (currently `15ad42b…`) before symlinking runtime headers. Sets `GOEXPERIMENT=jsonv2,greenteagc`.
 - `build-bofs` — `COPY Extension-Kit /src/Extension-Kit && COPY patches /src/patches && git apply /src/patches/extension-kit-nanodump-host-strip.patch`. The patch fixes an upstream nanodump Makefile bug that breaks on non-amd64 hosts (see §6.3). The build is then split into **two stages** so offline builds still succeed:
   1. **Strict pass.** Hard-coded list of 9 BOF subdirs (`AD-BOF Creds-BOF Elevation-BOF Execution-BOF Injection-BOF LateralMovement-BOF Postex-BOF Process-BOF SAR-BOF`) built one at a time — any failure stops the build. Update this list when upstream adds a BOF subdir (CI catches drift).
   2. **Best-effort pass.** `make -C /src/Extension-Kit/SAL-BOF || echo …` — SAL-BOF runs `python3 download_vulnerable_driver_list.py` over the network at build time; offline builds (and the CI sandbox if it ever loses network egress) tolerate its failure so the rest of the image still ships.
@@ -116,7 +117,7 @@ Multi-stage; build context = workspace root; **builds for the host architecture*
   5. `make -C /src/AdaptixC2 server-ext` — builds adaptixserver + all 9 extender plugins (Adaptix's Makefile `EXTENDER_DIRS := $(shell find AdaptixServer/extenders -maxdepth 1 -type d ...)` auto-discovers Kharon's two new extenders, no Makefile edit needed).
   6. `make -C /src/AdaptixC2/AdaptixServer/extenders/agent_kharon agent` — explicit second-pass compile of the PIC beacon under `src_beacon/`; re-stages the artifacts into the *source* dist/ directory.
   7. `cp -r /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist/. /src/AdaptixC2/dist/extenders/agent_kharon/` — copies the second-pass artifacts back over the first-pass layout so the runtime image ships the beacon binaries alongside the plugin .so. The two-pass reconciliation is **intentional** (see in-Dockerfile comment) — do not collapse it without verifying the beacon ships.
-- `runtime` — minimal `debian:bookworm-slim` with `ca-certificates openssl curl gosu libcap2-bin` (`curl` for HEALTHCHECK, `gosu` for the entrypoint's privilege drop, `libcap2-bin` for the one-shot `setcap`). Creates a system user `adaptix` (UID/GID 10001, `--no-create-home`, `--shell /usr/sbin/nologin`) under which the server will eventually run. COPYs:
+- `runtime` — minimal `debian:bookworm-slim` (pinned by manifest-list digest) with `apt-get upgrade -y` to pick up Debian security patches that were issued after the pinned base was published, then `apt-get install -y --no-install-recommends ca-certificates openssl curl gosu libcap2-bin` (`curl` for HEALTHCHECK, `gosu` for the entrypoint's privilege drop, `libcap2-bin` for the one-shot `setcap`). The digest-pin-plus-upgrade pairing means the *starting point* is reproducible but security patches available on build day flow through; Trivy in CI tells us when a patch is missing. Creates a system user `adaptix` (UID/GID 10001, `--no-create-home`, `--shell /usr/sbin/nologin`) under which the server will eventually run. COPYs:
   - `/src/AdaptixC2/dist/` → `/app/` (server, ssl_gen.sh, 404page.html, all 9 extenders)
   - `/src/Extension-Kit` → `/app/Extension-Kit`
   - `/src/PostEx-Arsenal` → `/app/PostEx-Arsenal`
@@ -827,9 +828,12 @@ Per job, the steps are:
 2. **`docker/setup-buildx-action@v3`** — registers the buildx builder.
 3. **Build** — `docker compose --profile build build`. Host-arch, just like a local build.
 4. **Smoke test** — `docker run -d` the freshly-built image with `-p 4321:4321`, a writable `./data` mount, `ADAPTIX_TEAMSERVER_PASSWORD=ci-smoke-pw`, and the same hardened posture compose enforces in §5.2 (`--read-only`, `--tmpfs /tmp`, `--cap-drop ALL` + the four cap-adds, `--security-opt no-new-privileges:true`). Then poll `docker inspect --format '{{.State.Health.Status}}'` every 3 seconds up to 30 iterations (~90s budget) waiting for the HEALTHCHECK to report `healthy`. Once healthy, assert PID 1 in the container is running as UID 10001 (`adaptix`) by reading `/proc/1/status` via `docker exec` — catches a dropped `exec gosu` in the entrypoint. On failure, dumps `docker logs` for diagnosis.
-5. **Teardown** — `docker rm -f` the smoke container in an `if: always()` step so the runner is clean for the next job.
+5. **Vulnerability scan (Trivy)** — `aquasecurity/trivy-action@v0.36.0` scans `adaptixc2-omni:latest` for OS + library CVEs. Fails on `CRITICAL` or `HIGH` severity with `ignore-unfixed: true` — we only block on things we can act on (bump base-image digest, bump apt package). Runs after smoke so we don't scan a broken image.
+6. **SBOM generation** — `trivy-action` again, this time with `format: cyclonedx` and `output: sbom-${{ matrix.runner }}.cyclonedx.json`.
+7. **Upload SBOM** — `actions/upload-artifact@v4` attaches the per-arch SBOM to the workflow run (`sbom-ubuntu-latest` / `sbom-ubuntu-24.04-arm`, 30-day retention). Not consumed by anything in CI today; available for audit/compliance use.
+8. **Teardown** — `docker rm -f` the smoke container in an `if: always()` step so the runner is clean for the next job.
 
-Total wall time: about **7–8 minutes** for both arches together (the two matrix jobs run in parallel; the build dominates each at ~7 min and the smoke test is sub-90s once the image is up). An earlier draft of this section quoted 12–18 minutes per arch — that was a conservative estimate from the first runs and has been borne out as too high by ~6 PRs of measured runs.
+Total wall time: about **7–8 minutes** for both arches together (the two matrix jobs run in parallel; the build dominates each at ~7 min and the smoke test is sub-90s once the image is up). The Trivy scan + SBOM add ~30–60 seconds per arch on top — most of that is the one-time CVE-database download. An earlier draft of this section quoted 12–18 minutes per arch — that was a conservative estimate from the first runs and has been borne out as too high by ~6 PRs of measured runs.
 
 ### 12.2 Why arm64 in CI
 
@@ -855,6 +859,7 @@ The most common failure modes, in order of historical likelihood:
 2. **A new BOF subdir appears in `Extension-Kit/` that's not in the strict list in `Dockerfile`'s `build-bofs` stage.** Add it to the list, or move it to the best-effort pass if it has network deps.
 3. **Smoke health-check never reports healthy.** Usually means the server crashed at startup — check the `docker logs` dump CI prints on timeout. Common cause: an upstream profile-schema change that broke the entrypoint's `sed` substitutions.
 4. **arm64 job times out while amd64 passes.** The 45-minute job timeout is generous, but the first build on a runner has no buildx layer cache. If this becomes chronic, add a `actions/cache` step keyed on submodule SHAs to persist intermediate layers.
+5. **Trivy scan fails with a new HIGH/CRITICAL CVE.** A fix has shipped upstream (otherwise `ignore-unfixed` would suppress it). Either bump the pinned base-image digest in `Dockerfile` (`docker buildx imagetools inspect <ref>` to get the new digest, then update both the digest and the comment in §3), or — if the CVE is in a Debian package installed in our `apt-get install` line — re-run the build (apt fetches latest by default, so the next layer rebuild picks up the patched package). Document the bump in the commit message.
 
 ---
 

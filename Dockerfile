@@ -12,7 +12,9 @@
 # ============================================
 # Stage: base — toolchains for every component
 # ============================================
-FROM golang:1.25.4-bookworm AS base
+# Pinned by digest, not just tag. Tags are mutable; digests aren't. Bump alongside
+# the version when refreshing — see BLUEPRINT.md §3 for the lookup procedure.
+FROM golang:1.25.10-bookworm@sha256:154bd7001b6eb339e88c964442c0ad6ed5e53f09844cc818a41ce4ecb3ce3b43 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOEXPERIMENT=jsonv2,greenteagc
@@ -122,17 +124,27 @@ RUN if [ -d /src/AdaptixC2/AdaptixServer/extenders/agent_kharon/dist ]; then \
 # ============================================
 # Stage: runtime — minimal server image
 # ============================================
-FROM debian:bookworm-slim AS runtime
+# Pinned by digest. Same rationale as the base stage above; bump on refresh.
+FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
         ca-certificates \
         openssl \
         curl \
         gosu \
         libcap2-bin \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# `apt-get upgrade -y` above pulls Debian security updates into the base
+# image's pre-existing packages (e.g. libgnutls30 was at +deb12u6 in the
+# pinned base; +deb12u7 fixes a critical CVE). Pairing the digest pin (for
+# a reproducible starting point) with an upgrade pass (for security patches
+# available on build day) is the Debian convention; Trivy in CI surfaces
+# when a new patch is available and not yet picked up.
 
 # Unprivileged runtime account. The entrypoint stays root long enough to chown
 # the /app/data bind mount and render the profile, then drops to `adaptix` via
