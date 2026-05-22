@@ -36,7 +36,8 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 │
 ├── docker/
 │   ├── Dockerfile.windows-client                  ← Windows Server Core + MSYS2 client build image; §11.2
-│   └── entrypoint.sh                              ← runtime image entrypoint: TLS cert-gen + profile rendering on first start (§5.7)
+│   ├── entrypoint.sh                              ← runtime image entrypoint: TLS cert-gen + profile rendering + gosu privilege drop (§5.7)
+│   └── 404page.html                               ← defensive nginx-shaped 404 page; overrides upstream branded page (§5.9)
 │
 ├── patches/                                       ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch           ← see §5.5 / §6.1
@@ -45,7 +46,7 @@ The workspace itself is a git repo. The four upstream projects are git **submodu
 │
 ├── .github/
 │   └── workflows/
-│       └── build.yml     ← CI: amd64+arm64 image build + healthcheck-based smoke test (§12)
+│       └── build.yml     ← CI: amd64+arm64 build + hardened smoke + UID/fingerprint asserts + Trivy + SBOM (§12)
 │
 ├── data/                 ← created at runtime; profile.yaml + credentials.txt + SQLite DB (bind mount, gitignored)
 └── AdaptixClient-dist/   ← created during builds; AppImage and .app land here (gitignored)
@@ -97,6 +98,16 @@ These were resolved up-front via `AskUserQuestion`. Repeat them if re-running th
 9. **Windows client container build:** `docker/Dockerfile.windows-client` installs MSYS2 inside a Windows Server Core container and builds the same MinGW64 Qt client without mutating the host. `scripts/build-client-windows-container.ps1` can call Docker Desktop's local `DockerCli.exe -SwitchWindowsEngine` when requested, but the engine switch is global and temporarily disables Linux-container workflows.
 
 10. **Runtime privilege reduction:** the server runs as an unprivileged `adaptix` user (UID/GID 10001) inside the container, with a read-only rootfs, a small `tmpfs` for `/tmp`, `cap_drop:[ALL]` + `cap_add:[CHOWN, SETUID, SETGID, NET_BIND_SERVICE]`, and `security_opt:no-new-privileges`. The entrypoint stays root only long enough to chown the bind mount + render the profile, then `exec gosu`s to UID 10001. `setcap cap_net_bind_service=+ep` on the server binary preserves the one cap operator listeners need (`:80`/`:443`/`:53`) across the gosu UID drop — every other cap stays dropped. CI smoke-tests the same posture (§12.1).
+
+11. **Entrypoint shell hardening:** `docker/entrypoint.sh` runs under `set -euo pipefail` with an `ERR` trap, rejects set-but-empty `ADAPTIX_TEAMSERVER_PASSWORD` / `ADAPTIX_OPERATORS` overrides, validates operator entries (separator + non-empty user + non-empty pass) before rendering, parses the operators list via bash array iteration to avoid word-splitting/globbing hazards, removes a tempfile via an `EXIT` trap, and **does not echo the teamserver password to stdout** — `docker logs` is captured indefinitely, so the password lives only in `/app/data/credentials.txt` (mode 600).
+
+12. **TLS cert algorithm + validity + SAN:** entrypoint generates an **ECDSA P-256** key (replacing the previous RSA 2048) with **365-day validity** (down from 3650) and `subjectAltName=DNS:localhost,IP:127.0.0.1` by default. Override via `ADAPTIX_TLS_SAN` for real deployments; `ADAPTIX_TLS_SUBJECT` overrides the issuer DN. The `.rsa.` in the filenames is historical and kept so the profile template doesn't need rewriting.
+
+13. **Compose resource bounds:** the runtime service sets `mem_limit: 4g` (override: `ADAPTIX_MEM_LIMIT`), `pids_limit: 4096` (override: `ADAPTIX_PIDS_LIMIT`), and `logging.driver: json-file` with `max-size: 10m` / `max-file: 3` so a runaway plugin or noisy log line can't take down the host. These are operational floors, not security boundaries.
+
+14. **Supply-chain (digest pins + Trivy + SBOM + apt upgrade):** base images pinned by manifest-list digest (`golang:1.25.10-bookworm@sha256:154bd70…`, `debian:bookworm-slim@sha256:0104b33…`). Trivy in CI fails on `CRITICAL`/`HIGH` CVEs with `ignore-unfixed: true`. CycloneDX SBOM uploaded as a per-arch workflow artifact. Runtime stage runs `apt-get upgrade -y` so Debian security patches flow through at build time (the digest pin gives a reproducible starting point; upgrade adds the day's patches).
+
+15. **Fingerprint reduction:** `profile.kharon.yaml` advertises `Server: nginx` instead of `Server: AdaptixC2` and drops the `Adaptix-Version` header entirely. `docker/404page.html` overrides upstream's `<h1>AdaptixC2 404</h1>` body with an nginx-default-shaped page so passive enumeration sees a consistent decoy. CI asserts both via `docker exec | grep`.
 
 ## 5. Files added by this workspace
 

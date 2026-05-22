@@ -23,7 +23,8 @@ A single `docker compose build` produces a runtime image containing:
   - All [Extension-Kit](https://github.com/Adaptix-Framework/Extension-Kit) BOFs (`AD-BOF`, `Creds-BOF`, `Elevation-BOF`, `Execution-BOF`, `Injection-BOF`, `LateralMovement-BOF`, `Postex-BOF`, `Process-BOF`, `SAL-BOF`, `SAR-BOF`)
   - All [PostEx-Arsenal](https://github.com/entropy-z/PostEx-Arsenal) BOFs and shellcode under `bofs/dist/` and `postex_sc/`
 - **Profile pre-merged** (`profile.kharon.yaml`) so all 9 extenders register on first start and both AxScript module sets (`extension-kit.axs`, `kh_modules.axs`) auto-load.
-- **TLS auto-bootstrap** — the entrypoint generates self-signed `server.rsa.crt`/`.key` on first run; persistent state lives in `./data/` via a bind-mount.
+- **TLS auto-bootstrap** — the entrypoint generates a self-signed ECDSA P-256 cert (365-day validity, SAN from `ADAPTIX_TLS_SAN` env var or `DNS:localhost,IP:127.0.0.1` default) on first run; persistent state lives in `./data/` via a bind-mount.
+- **Hardened runtime posture** — server runs as unprivileged UID 10001 with a read-only rootfs, `cap_drop:[ALL]` plus the four caps it actually needs (`CHOWN`, `SETUID`, `SETGID`, `NET_BIND_SERVICE`), `no-new-privileges`, mem/PID/log-size limits, ECDHE-only TLS suites, and an nginx-decoy 404 page so passive enumeration can't fingerprint the framework. Trivy + CycloneDX SBOM run in CI. Full breakdown in [BLUEPRINT.md §5 / §12](./BLUEPRINT.md).
 
 Plus separate workflows for the GUI clients:
 
@@ -172,7 +173,8 @@ AdaptixC2-Omni/
 │   ├── build-client-windows-container.ps1 ← Windows exe build via Windows container
 │   └── install-prereqs-windows.ps1  ← Windows prerequisite installer (MSYS2 + MinGW64 + Qt6)
 ├── docker/
-│   ├── entrypoint.sh
+│   ├── entrypoint.sh                ← first-start bootstrap (TLS cert, profile render, drop to UID 10001)
+│   ├── 404page.html                 ← defensive nginx-shaped 404 (overrides upstream's framework-branded page)
 │   └── Dockerfile.windows-client    ← Windows Server Core + MSYS2 client build image
 ├── patches/              ← build-time patches against submodules
 │   ├── adaptixclient-macos-bundle.patch
@@ -200,7 +202,9 @@ Every customization is either a workspace-root file we authored or a tracked pat
 |---|---|---|
 | Unified server Dockerfile | `Dockerfile` | Single image with server + 9 extenders + BOFs + axscripts; one build, one artifact. |
 | Compose orchestration | `docker-compose.yml` | Three profiles (`build`, `runtime`, `build-client`) covering the full lifecycle. |
-| Kharon + AxScripts wired into server profile | `profile.kharon.yaml` | Adds the two Kharon extenders and the two AxScript module sets to the upstream default profile. |
+| Kharon + AxScripts wired into server profile | `profile.kharon.yaml` | Adds the two Kharon extenders and the two AxScript module sets to the upstream default profile. Also strips the framework-fingerprint 404 headers (`Server: AdaptixC2`, `Adaptix-Version: v1.2`) for a `Server: nginx` decoy. |
+| First-start bootstrap entrypoint | `docker/entrypoint.sh` | Renders the profile template, generates the TLS cert, persists credentials, then drops privileges to UID 10001 via `gosu`. Replaces the upstream inline cert-only entrypoint. |
+| Defensive 404 page | `docker/404page.html` | Overrides upstream's `<h1>AdaptixC2 404</h1>` page with an nginx-default-shaped body that matches the `Server: nginx` header decoy. COPYed in the Dockerfile after the upstream dist COPY. |
 | macOS bundle CMake additions | `patches/adaptixclient-macos-bundle.patch` | Upstream `AdaptixClient/CMakeLists.txt` doesn't set `MACOSX_BUNDLE`, so a plain `make` produces a bare exe. The patch adds an `if(APPLE)` block setting bundle properties; `scripts/build-client-macos.sh` applies and reverts it around each build. |
 | nanodump host-strip fix | `patches/extension-kit-nanodump-host-strip.patch` | Upstream nanodump strips its host-built `restore_signature` ELF with the Windows cross-strip, which breaks on arm64 hosts. The patch deletes the redundant strip line; `gcc -s` on the prior line already strips it. Applied inside the build container by the Dockerfile. |
 | arm64 client build via kali-rolling | `patches/adaptixclient-kali-arm64-stage.patch` | aqtinstall publishes no Linux aarch64 Qt binaries through 6.11.x, so the upstream `build-client` Dockerfile stage can't target arm64. The patch appends a new `build-client-kali` stage that uses kali-rolling's distro Qt 6.10.2 + `linuxdeploy` instead. Purely additive — the original `build-client` stage is unchanged, so amd64 builds are byte-equivalent to upstream. Applied on the host by `scripts/build-client-linux.sh` with auto-revert. |
